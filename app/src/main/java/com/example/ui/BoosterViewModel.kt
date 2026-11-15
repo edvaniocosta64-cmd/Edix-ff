@@ -23,12 +23,16 @@ import com.example.model.CoolerSpeed
 import com.example.model.DeviceTelemetry
 import com.example.model.DiagnosticAction
 import com.example.model.GraphicsBackend
+import com.example.model.GraphicsRendererStatus
 import com.example.model.InstalledAppItem
+import com.example.model.IphoneTouchConfig
+import com.example.model.PerGameConfig
 import com.example.model.RefreshRateOption
 import com.example.model.WallpaperTheme
 import com.example.overlay.FloatingFpsMeterService
 import com.example.overlay.FloatingHzOverlayService
 import com.example.overlay.FloatingResolutionOverlayService
+import com.example.overlay.GameDpiSessionService
 import com.example.resolution.ResolutionPanelService
 import com.example.shizuku.ShizukuBridge
 import com.example.shizuku.ShizukuConnectionState
@@ -59,6 +63,7 @@ data class BoosterUiState(
   val boostPulseKey: Int = 0,
   val statusBanner: String? = null,
   val shizukuStatus: ShizukuStatus = ShizukuStatus(),
+  val graphicsStatus: GraphicsRendererStatus = GraphicsRendererStatus(),
   val shizukuLogs: List<String> = emptyList(),
   val moduleLogs: Map<String, String> = emptyMap(),
   val canWriteSystemSettings: Boolean = false,
@@ -95,7 +100,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
         .collect { (settings, added) ->
           if (!hasSyncedInitialMusic) {
             hasSyncedInitialMusic = true
-            if (settings.bgMusicEnabled && musicEngine.hasMusic()) {
+            if (!_uiState.value.showDomainIntro && settings.bgMusicEnabled && musicEngine.hasMusic()) {
               musicEngine.startOrResume(settings.bgMusicVolume)
             }
           }
@@ -112,8 +117,28 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     }
 
     viewModelScope.launch {
+      var prevConn: ShizukuConnectionState? = null
       shizukuBridge.status.collect { shizuku ->
         _uiState.update { it.copy(shizukuStatus = shizuku) }
+        if (shizuku.connectionState == ShizukuConnectionState.CONNECTED &&
+          prevConn != ShizukuConnectionState.CONNECTED
+        ) {
+          val verified = shizukuBridge.verifyGraphicsBackendStatus(_uiState.value.settings.addedGamePackages)
+          _uiState.update { it.copy(graphicsStatus = verified) }
+        } else if (shizuku.connectionState != ShizukuConnectionState.CONNECTED &&
+          prevConn == ShizukuConnectionState.CONNECTED
+        ) {
+          _uiState.update {
+            it.copy(
+              graphicsStatus =
+                GraphicsRendererStatus(
+                  verifiedViaShizuku = false,
+                  lastVerifiedLabel = "Shizuku desconectado — conecte para verificar ao vivo.",
+                )
+            )
+          }
+        }
+        prevConn = shizuku.connectionState
       }
     }
 
@@ -153,9 +178,11 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
 
   fun dismissDomainIntro() {
     _uiState.update { it.copy(showDomainIntro = false) }
+    onAppForegrounded()
   }
 
   fun replayDomainIntro() {
+    musicEngine.pause()
     _uiState.update { it.copy(showDomainIntro = true) }
     voiceEngine.playDomainExpansion(_uiState.value.settings.voiceEnabled)
     telemetryManager.pulseHaptic(heavy = true)
@@ -253,6 +280,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun onAppForegrounded() {
+    if (_uiState.value.showDomainIntro) return
     val s = _uiState.value.settings
     if (s.bgMusicEnabled && musicEngine.hasMusic()) {
       musicEngine.startOrResume(s.bgMusicVolume)
@@ -516,13 +544,26 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           )
         }
       }
+      if (moduleId == "mod_14_iphone_touch") {
+        repository.setIphoneTouchConfig(currentSettings.iphoneTouchConfig.copy(enabled = enabled))
+      }
+      if (moduleId == "mod_04_vulkan_hwui" || moduleId == "mod_05_angle_driver") {
+        val verified = shizukuBridge.verifyGraphicsBackendStatus(currentSettings.addedGamePackages)
+        _uiState.update { it.copy(graphicsStatus = verified) }
+      }
     }
   }
 
   fun restoreAllFactoryDefaults(activity: Activity?) {
     viewModelScope.launch {
+      val app = getApplication<Application>()
       val addedGames = _uiState.value.settings.addedGamePackages
       repository.restoreFactoryDefaultsState()
+      FloatingHzOverlayService.stop(app)
+      FloatingResolutionOverlayService.stop(app)
+      FloatingFpsMeterService.stop(app)
+      ResolutionPanelService.stop(app)
+      GameDpiSessionService.restoreAndStop(app)
       val defaultSettings =
         _uiState.value.settings.copy(
           boostActive = false,
@@ -530,18 +571,25 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           performanceMax = false,
           ignoreThermalLimit = false,
           coolerActive = false,
+          graphicsBackend = GraphicsBackend.VULKAN_MAX,
           enabledModuleIds = emptySet(),
           targetRefreshRate = RefreshRateOption.HZ_60,
+          floatingHzOverlayEnabled = false,
+          floatingResolutionOverlayEnabled = false,
+          floatingFpsMeterEnabled = false,
+          backgroundResolutionPanelEnabled = false,
         )
       applyWindowPerformance(activity, defaultSettings)
       val report = shizukuBridge.restoreAllDefaults(addedGames)
+      val verified = shizukuBridge.verifyGraphicsBackendStatus(addedGames)
       telemetryManager.pulseHaptic(false)
       _uiState.update {
         it.copy(
           shizukuLogs = report?.details ?: emptyList(),
           moduleLogs = emptyMap(),
+          graphicsStatus = verified,
           statusBanner =
-            report?.summary ?: "Todas as opções e módulos foram restaurados para o padrão!",
+            report?.summary ?: "Todas as opções, overlays e renderização foram restaurados para o padrão!",
         )
       }
       refreshTelemetryInternal()
@@ -626,7 +674,10 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           ignoreThermalLimit = if (enable) true else _uiState.value.settings.ignoreThermalLimit,
         )
       applyWindowPerformance(activity, nextSettings)
-      val report = shizukuBridge.applyRootTotalPerformance(enable)
+      if (enable) {
+        withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
+      }
+      val report = shizukuBridge.applyRootTotalPerformance(enable, _uiState.value.settings.addedGamePackages)
       if (enable) {
         voiceEngine.playHollowPurpleBoost(nextSettings.voiceEnabled)
         telemetryManager.pulseHaptic(heavy = true)
@@ -638,41 +689,108 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           boostPulseKey = if (enable) it.boostPulseKey + 1 else it.boostPulseKey,
           shizukuLogs = report?.details ?: it.shizukuLogs,
           statusBanner =
-            report?.summary ?: "Desempenho Total Root ${if (enable) "ativado" else "desativado"}.",
+            report?.summary ?: "Desempenho Total ${if (enable) "ativado" else "desativado"}.",
         )
       }
       refreshTelemetryInternal()
     }
   }
 
+  private fun resolveMaxRefreshOption(maxHz: Int): RefreshRateOption =
+    when {
+      maxHz >= 120 -> RefreshRateOption.HZ_120
+      maxHz >= 90 -> RefreshRateOption.HZ_90
+      else -> RefreshRateOption.HZ_60
+    }
+
   fun activateOrToggleVazioRoxo(activity: Activity?) {
     viewModelScope.launch {
       val current = _uiState.value.settings
       val nextActive = !current.boostActive
-      repository.setBoostActive(nextActive)
-      val nextSettings = current.copy(boostActive = nextActive)
       if (nextActive) {
+        val freshTelemetry =
+          withContext(Dispatchers.IO) {
+            telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
+          }
+        val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, 60)
+        val maxOption = resolveMaxRefreshOption(deviceMaxHz)
+        val canForceRootPerf =
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+
+        repository.setBoostActive(true)
+        repository.setFpsUnlocked(true)
+        repository.setPerformanceMax(true)
+        repository.setIgnoreThermalLimit(true)
+        repository.setTargetRefreshRate(maxOption)
+        if (canForceRootPerf) {
+          repository.setRootTotalPerformanceEnabled(true)
+        }
+
+        val nextSettings =
+          current.copy(
+            boostActive = true,
+            fpsUnlocked = true,
+            performanceMax = true,
+            ignoreThermalLimit = true,
+            targetRefreshRate = maxOption,
+            rootTotalPerformanceEnabled = canForceRootPerf || current.rootTotalPerformanceEnabled,
+          )
+
         val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-        applyWindowPerformance(activity, nextSettings)
-        val shizukuReport = shizukuBridge.applyBoostProfile(nextSettings)
+        telemetryManager.applyDisplayRefreshRate(
+          activity = activity,
+          targetHz = deviceMaxHz,
+          sustainedPerformance = false,
+        )
+        val shizukuReport = shizukuBridge.applyBoostProfile(nextSettings, forcedMaxHz = deviceMaxHz)
+        val rootReport =
+          if (canForceRootPerf) {
+            shizukuBridge.applyRootTotalPerformance(true, nextSettings.addedGamePackages)
+          } else {
+            null
+          }
+        val combinedLogs =
+          ((shizukuReport?.details ?: emptyList()) + (rootReport?.details ?: emptyList())).distinct()
+        val verifiedGraphics =
+          if (_uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED) {
+            shizukuBridge.verifyGraphicsBackendStatus(nextSettings.addedGamePackages)
+          } else {
+            _uiState.value.graphicsStatus
+          }
+
         voiceEngine.playHollowPurpleBoost(current.voiceEnabled)
         telemetryManager.pulseHaptic(heavy = true)
         val shizukuSuffix =
-          if (shizukuReport != null) " + Shizuku (${shizukuReport.executedCount} cmds)" else ""
+          if (combinedLogs.isNotEmpty()) " + Shizuku (${combinedLogs.size} cmds)" else ""
         _uiState.update {
           it.copy(
             lastFreedRamMb = freed,
             boostPulseKey = it.boostPulseKey + 1,
-            shizukuLogs = shizukuReport?.details ?: it.shizukuLogs,
+            shizukuLogs = combinedLogs.ifEmpty { it.shizukuLogs },
+            graphicsStatus = verifiedGraphics,
             statusBanner =
-              "Vazio Roxo Ativo • ${current.graphicsBackend.title} • ${current.targetRefreshRate.label}$shizukuSuffix (${freed} MB)",
+              "Modo Infinito Ativo • ${deviceMaxHz}Hz Máx + Desempenho Total Forçado$shizukuSuffix (${freed} MB)",
           )
         }
       } else {
+        val wasRootActive = current.rootTotalPerformanceEnabled
+        repository.setBoostActive(false)
+        if (wasRootActive) {
+          repository.setRootTotalPerformanceEnabled(false)
+        }
+        val nextSettings =
+          current.copy(
+            boostActive = false,
+            rootTotalPerformanceEnabled = false,
+          )
         applyWindowPerformance(activity, nextSettings)
         shizukuBridge.applyBoostProfile(nextSettings)
+        if (wasRootActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          shizukuBridge.applyRootTotalPerformance(false, current.addedGamePackages)
+        }
         telemetryManager.pulseHaptic(heavy = false)
-        _uiState.update { it.copy(statusBanner = "Modo Infinito pausado. Perfil padrão restaurado.") }
+        _uiState.update { it.copy(statusBanner = "Modo Infinito pausado. Hz e perfil padrão restaurados.") }
       }
       refreshTelemetryInternal()
     }
@@ -711,7 +829,57 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     viewModelScope.launch {
       repository.setGraphicsBackend(backend)
       telemetryManager.pulseHaptic(false)
-      _uiState.update { it.copy(statusBanner = "Motor gráfico definido: ${backend.title}") }
+      _uiState.update {
+        it.copy(statusBanner = "Perfil selecionado: ${backend.title}. Toque em Ativar Renderização para aplicar no sistema.")
+      }
+    }
+  }
+
+  fun activateSelectedGraphicsBackend() {
+    viewModelScope.launch {
+      val backend = _uiState.value.settings.graphicsBackend
+      val addedGames = _uiState.value.settings.addedGamePackages
+      val (msg, status) = shizukuBridge.applyGraphicsBackend(backend, addedGames)
+      telemetryManager.pulseHaptic(msg != null)
+      _uiState.update {
+        it.copy(
+          graphicsStatus = status,
+          statusBanner =
+            msg ?: "Conecte e autorize o Shizuku para ativar ${backend.title} no sistema.",
+        )
+      }
+    }
+  }
+
+  fun verifyGraphicsBackendStatus() {
+    viewModelScope.launch {
+      val addedGames = _uiState.value.settings.addedGamePackages
+      val status = shizukuBridge.verifyGraphicsBackendStatus(addedGames)
+      telemetryManager.pulseHaptic(false)
+      val activeLabel = status.activeBackendDetected?.title ?: "Padrão do Sistema"
+      _uiState.update {
+        it.copy(
+          graphicsStatus = status,
+          statusBanner =
+            if (status.verifiedViaShizuku) "Verificado ($activeLabel): ${status.lastVerifiedLabel}"
+            else status.lastVerifiedLabel,
+        )
+      }
+    }
+  }
+
+  fun restoreGraphicsBackendDefaults() {
+    viewModelScope.launch {
+      val addedGames = _uiState.value.settings.addedGamePackages
+      repository.setGraphicsBackend(GraphicsBackend.VULKAN_MAX)
+      val (msg, status) = shizukuBridge.restoreGraphicsBackendDefaults(addedGames)
+      telemetryManager.pulseHaptic(false)
+      _uiState.update {
+        it.copy(
+          graphicsStatus = status,
+          statusBanner = msg ?: "Perfil restaurado. Autorize o Shizuku para limpar as propriedades do sistema.",
+        )
+      }
     }
   }
 
@@ -720,14 +888,102 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       repository.setTargetRefreshRate(option)
       telemetryManager.pulseHaptic(false)
       applyWindowPerformance(activity, _uiState.value.settings.copy(targetRefreshRate = option))
+      val spec = telemetryManager.readNativeScreenSpec()
+      val shizukuMsg = shizukuBridge.applyRealtimeRefreshRate(option.hz, spec.widthPx, spec.heightPx)
       refreshTelemetryInternal()
-      _uiState.update { it.copy(statusBanner = "Taxa de fluidez ajustada para ${option.label}") }
+      _uiState.update {
+        it.copy(statusBanner = shizukuMsg ?: "Taxa de fluidez ajustada para ${option.label}")
+      }
+    }
+  }
+
+  fun selectAnimationScale(scale: Float) {
+    viewModelScope.launch {
+      val clamped = scale.coerceIn(0f, 1f)
+      repository.setAnimationScale(clamped)
+      telemetryManager.pulseHaptic(false)
+      val msg = shizukuBridge.applyAnimationScale(clamped)
+      val label = "${String.format(java.util.Locale.US, "%.2f", clamped)}x"
+      _uiState.update {
+        it.copy(
+          statusBanner = msg ?: "Escala de animação definida para $label (conecte o Shizuku para aplicar no sistema).",
+        )
+      }
+    }
+  }
+
+  fun updatePerGameConfig(config: PerGameConfig) {
+    viewModelScope.launch {
+      repository.setPerGameConfig(config)
+      telemetryManager.pulseHaptic(false)
+    }
+  }
+
+  fun updateIphoneTouchConfig(config: IphoneTouchConfig) {
+    viewModelScope.launch {
+      val prevEnabled = _uiState.value.settings.iphoneTouchConfig.enabled
+      repository.setIphoneTouchConfig(config)
+      if (config.enabled != prevEnabled) {
+        repository.setModuleEnabled("mod_14_iphone_touch", config.enabled)
+      }
+      telemetryManager.pulseHaptic(false)
+      if (config.enabled != prevEnabled) {
+        val report = shizukuBridge.applyIphoneTouchModule(config, _uiState.value.settings.addedGamePackages)
+        if (report != null) {
+          _uiState.update {
+            it.copy(
+              shizukuLogs = report.details,
+              moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to report.summary),
+              statusBanner = report.summary,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  fun applyIphoneTouchModuleNow() {
+    viewModelScope.launch {
+      val enabledCfg = _uiState.value.settings.iphoneTouchConfig.copy(enabled = true)
+      repository.setIphoneTouchConfig(enabledCfg)
+      repository.setModuleEnabled("mod_14_iphone_touch", true)
+      val report = shizukuBridge.applyIphoneTouchModule(enabledCfg, _uiState.value.settings.addedGamePackages)
+      telemetryManager.pulseHaptic(true)
+      _uiState.update {
+        it.copy(
+          shizukuLogs = report?.details ?: it.shizukuLogs,
+          moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to (report?.summary ?: "Salvo • Autorize Shizuku para aplicar")),
+          statusBanner =
+            report?.summary ?: "Módulo iPhone Touch salvo! Conecte o Shizuku para aplicar no sistema.",
+        )
+      }
+    }
+  }
+
+  fun restoreIphoneTouchDefaults() {
+    viewModelScope.launch {
+      val resetCfg = _uiState.value.settings.iphoneTouchConfig.copy(enabled = false)
+      repository.setIphoneTouchConfig(resetCfg)
+      repository.setModuleEnabled("mod_14_iphone_touch", false)
+      val msg = shizukuBridge.restoreTouchDefaults()
+      telemetryManager.pulseHaptic(false)
+      _uiState.update {
+        it.copy(
+          moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to (msg ?: "Toque restaurado ao padrão")),
+          statusBanner = msg ?: "Toque restaurado para o padrão no perfil.",
+        )
+      }
     }
   }
 
   fun applyWindowPerformance(activity: Activity?, settings: BoosterSettings = _uiState.value.settings) {
     val targetHz =
-      if (settings.fpsUnlocked) settings.targetRefreshRate.hz else 60
+      when {
+        settings.boostActive ->
+          maxOf(_uiState.value.telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60)
+        settings.fpsUnlocked -> settings.targetRefreshRate.hz
+        else -> 60
+      }
     val sustained =
       settings.performanceMax && !settings.ignoreThermalLimit && settings.boostActive
     telemetryManager.applyDisplayRefreshRate(
@@ -863,6 +1119,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun removeGamePackage(packageName: String) {
     viewModelScope.launch {
       repository.removeGamePackage(packageName)
+      repository.removePerGameConfig(packageName)
       telemetryManager.pulseHaptic(false)
     }
   }
@@ -879,19 +1136,81 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun launchGameWithBoost(packageName: String, label: String, activity: Activity?) {
     viewModelScope.launch {
       val current = _uiState.value.settings
-      val activeSettings = current.copy(boostActive = true)
+      val freshTelemetry =
+        withContext(Dispatchers.IO) {
+          telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
+        }
+      val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, 60)
+      val maxOption = resolveMaxRefreshOption(deviceMaxHz)
+      val canForceRootPerf =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+          _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+
+      val activeSettings =
+        current.copy(
+          boostActive = true,
+          fpsUnlocked = true,
+          performanceMax = true,
+          ignoreThermalLimit = true,
+          targetRefreshRate = maxOption,
+          rootTotalPerformanceEnabled = canForceRootPerf || current.rootTotalPerformanceEnabled,
+        )
       repository.setBoostActive(true)
+      repository.setFpsUnlocked(true)
+      repository.setPerformanceMax(true)
+      repository.setIgnoreThermalLimit(true)
+      repository.setTargetRefreshRate(maxOption)
+      if (canForceRootPerf) {
+        repository.setRootTotalPerformanceEnabled(true)
+      }
+
       withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-      applyWindowPerformance(activity, activeSettings)
-      val shizukuReport = shizukuBridge.applyBoostProfile(activeSettings, targetGamePackage = packageName)
+      telemetryManager.applyDisplayRefreshRate(
+        activity = activity,
+        targetHz = deviceMaxHz,
+        sustainedPerformance = false,
+      )
+      val shizukuReport =
+        shizukuBridge.applyBoostProfile(
+          activeSettings,
+          targetGamePackage = packageName,
+          forcedMaxHz = deviceMaxHz,
+        )
+      val rootReport =
+        if (canForceRootPerf) {
+          shizukuBridge.applyRootTotalPerformance(true, (current.addedGamePackages + packageName))
+        } else {
+          null
+        }
+      val combinedLogs =
+        ((shizukuReport?.details ?: emptyList()) + (rootReport?.details ?: emptyList())).distinct()
+      val gameCfg = current.perGameConfigs[packageName]
+      val hasGameDpiOrTouch =
+        gameCfg != null && (gameCfg.customDpi != null || gameCfg.touchScriptEnabled)
+      if (hasGameDpiOrTouch && gameCfg != null) {
+        GameDpiSessionService.start(
+          context = getApplication(),
+          packageName = packageName,
+          label = label,
+          customDpi = gameCfg.customDpi,
+          touchEnabled = gameCfg.touchScriptEnabled,
+          touchSensitivity = gameCfg.touchSensitivity,
+        )
+      }
+
       voiceEngine.playHollowPurpleBoost(current.voiceEnabled)
       telemetryManager.pulseHaptic(heavy = true)
-      val extra = if (shizukuReport != null) " + Shizuku GameMode" else ""
+      val extra = buildList {
+        if (shizukuReport != null) add("Shizuku")
+        if (gameCfg?.customDpi != null) add("DPI ${gameCfg.customDpi}")
+        if (gameCfg?.touchScriptEnabled == true) add("Touch Nv.${gameCfg.touchSensitivity}")
+      }.joinToString(" + ")
+      val suffix = if (extra.isNotBlank()) " + $extra" else ""
       _uiState.update {
         it.copy(
           boostPulseKey = it.boostPulseKey + 1,
-          shizukuLogs = shizukuReport?.details ?: it.shizukuLogs,
-          statusBanner = "Aplicando Vazio Roxo (${current.graphicsBackend.title}$extra) e abrindo $label...",
+          shizukuLogs = combinedLogs.ifEmpty { it.shizukuLogs },
+          statusBanner = "Vazio Roxo ${deviceMaxHz}Hz (${current.graphicsBackend.title}$suffix) • Abrindo $label...",
         )
       }
       delay(450L)

@@ -45,10 +45,13 @@ import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Whatshot
 import androidx.compose.material3.Button
@@ -83,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.model.AnimationScaleOption
 import com.example.model.GraphicsBackend
 import com.example.model.RefreshRateOption
 import com.example.model.WallpaperTheme
@@ -114,7 +118,11 @@ fun BoosterDashboardScreen(
   onTogglePerformanceMax: (Boolean) -> Unit,
   onToggleIgnoreThermal: (Boolean) -> Unit,
   onSelectRefreshRate: (RefreshRateOption) -> Unit,
+  onSelectAnimationScale: (Float) -> Unit,
   onSelectGraphicsBackend: (GraphicsBackend) -> Unit,
+  onActivateGraphicsBackend: () -> Unit,
+  onVerifyGraphicsBackend: () -> Unit,
+  onRestoreGraphicsBackend: () -> Unit,
   onOpenDeveloperOptions: () -> Unit,
   onShizukuAction: () -> Unit,
   onRefreshShizuku: () -> Unit,
@@ -190,9 +198,14 @@ fun BoosterDashboardScreen(
             }
           }
           Text(
-            text = "Criador: edix ff • ${telemetry.deviceName.ifBlank { "Android" }} • ${telemetry.gpuRendererLabel}",
+            text = "Criador: edix ff",
             style = MaterialTheme.typography.labelMedium,
-            color = MutedLavender,
+            color = ColdWhite,
+          )
+          Text(
+            text = "App em teste — não está na versão completa",
+            style = MaterialTheme.typography.labelSmall,
+            color = WarningAmber,
           )
         }
 
@@ -225,10 +238,14 @@ fun BoosterDashboardScreen(
 
     // Hollow Purple Reactor Hero
     item {
+      val effectiveTargetHz =
+        if (settings.boostActive) maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz)
+        else settings.targetRefreshRate.hz
       HollowPurpleReactorCard(
         boostActive = settings.boostActive,
         liveFps = telemetry.liveFps,
-        targetHz = settings.targetRefreshRate.hz,
+        targetHz = effectiveTargetHz,
+        maxHardwareHz = telemetry.maxDisplayHz,
         backendBadge = settings.graphicsBackend.title,
         tempC = telemetry.batteryTempC,
         ramPercent = telemetry.ramPercent,
@@ -430,6 +447,56 @@ fun BoosterDashboardScreen(
           }
         }
 
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+          text = "Escala de Animação do Sistema (${String.format(java.util.Locale.US, "%.2f", settings.animationScale)}x)",
+          style = MaterialTheme.typography.titleSmall,
+          color = ColdWhite,
+        )
+        Text(
+          text = "Controla velocidade de janelas, transições e efeitos do celular e do app",
+          style = MaterialTheme.typography.bodySmall,
+          color = MutedLavender,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          AnimationScaleOption.entries.forEach { animOpt ->
+            val selected = kotlin.math.abs(settings.animationScale - animOpt.scale) < 0.05f
+            Surface(
+              modifier =
+                Modifier.weight(1f)
+                  .minimumInteractiveComponentSize()
+                  .clip(RoundedCornerShape(10.dp))
+                  .clickable { onSelectAnimationScale(animOpt.scale) }
+                  .testTag("anim_scale_${animOpt.label}"),
+              shape = RoundedCornerShape(10.dp),
+              color = if (selected) HollowPurple.copy(alpha = 0.42f) else VoidSurfaceElevated,
+              border = BorderStroke(1.dp, if (selected) LimitlessCyan else VoidBorder),
+            ) {
+              Column(
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                Text(
+                  text = animOpt.label,
+                  style = MaterialTheme.typography.labelLarge,
+                  color = if (selected) ColdWhite else MutedLavender,
+                )
+                Text(
+                  text = animOpt.subtitle,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = if (selected) LimitlessCyan else MutedLavender.copy(alpha = 0.75f),
+                  textAlign = TextAlign.Center,
+                  maxLines = 1,
+                )
+              }
+            }
+          }
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
         Button(
           onClick = { onToggleFloatingHzOverlay(!settings.floatingHzOverlayEnabled) },
@@ -456,9 +523,9 @@ fun BoosterDashboardScreen(
           Text(
             text =
               if (settings.floatingHzOverlayEnabled)
-                "Painel Flutuante Vermelho Hz: ATIVO"
+                "Painel Game Turbo (Hz • Render • Animação): ATIVO"
               else
-                "Abrir Painel Flutuante Vermelho (60/90/120Hz)",
+                "Abrir Painel Game Turbo (Hz • Render • 0,0/0,25/0,5)",
             style = MaterialTheme.typography.labelLarge,
             color = ColdWhite,
           )
@@ -573,6 +640,163 @@ fun BoosterDashboardScreen(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
+
+        // Live Graphics Renderer Verification Readout
+        val gStatus = state.graphicsStatus
+        val matchesSelection =
+          gStatus.verifiedViaShizuku && gStatus.activeBackendDetected == settings.graphicsBackend
+        val statusBorderColor =
+          when {
+            matchesSelection -> NeonSuccess.copy(alpha = 0.75f)
+            gStatus.verifiedViaShizuku -> LimitlessCyan.copy(alpha = 0.65f)
+            else -> VoidBorder
+          }
+        Surface(
+          modifier = Modifier.fillMaxWidth().testTag("graphics_status_panel"),
+          shape = RoundedCornerShape(14.dp),
+          color = VoidObsidian.copy(alpha = 0.8f),
+          border = BorderStroke(1.dp, statusBorderColor),
+        ) {
+          Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Verified,
+                  contentDescription = null,
+                  tint = if (gStatus.verifiedViaShizuku) NeonSuccess else MutedLavender,
+                  modifier = Modifier.size(18.dp),
+                )
+                Text(
+                  text =
+                    when {
+                      matchesSelection ->
+                        "ATIVO NO SISTEMA: ${gStatus.activeBackendDetected?.title}"
+                      gStatus.verifiedViaShizuku && gStatus.activeBackendDetected != null ->
+                        "DETECTADO: ${gStatus.activeBackendDetected.title}"
+                      gStatus.verifiedViaShizuku -> "SISTEMA EM PADRÃO DE FÁBRICA"
+                      else -> "STATUS NÃO VERIFICADO"
+                    },
+                  style = MaterialTheme.typography.labelLarge,
+                  color =
+                    when {
+                      matchesSelection -> NeonSuccess
+                      gStatus.verifiedViaShizuku -> LimitlessCyan
+                      else -> MutedLavender
+                    },
+                )
+              }
+            }
+            Text(
+              text =
+                "HWUI: ${gStatus.hwuiRenderer}  •  Engine: ${gStatus.renderEngineBackend}  •  ANGLE: ${gStatus.anglePackagesSummary}",
+              style = MaterialTheme.typography.labelSmall,
+              color = ColdWhite,
+            )
+            if (!gStatus.verifiedViaShizuku) {
+              Text(
+                text = gStatus.lastVerifiedLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = WarningAmber,
+              )
+            }
+          }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Activate Selected Renderer Button
+        Button(
+          onClick = onActivateGraphicsBackend,
+          modifier =
+            Modifier.fillMaxWidth()
+              .height(48.dp)
+              .testTag("activate_graphics_backend_button"),
+          shape = RoundedCornerShape(14.dp),
+          colors =
+            ButtonDefaults.buttonColors(
+              containerColor = HollowPurple,
+              contentColor = ColdWhite,
+            ),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.PlayArrow,
+            contentDescription = null,
+            tint = ColdWhite,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.size(6.dp))
+          Text(
+            text = "Ativar ${settings.graphicsBackend.title} Agora",
+            style = MaterialTheme.typography.labelLarge,
+            color = ColdWhite,
+          )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Verify & Restore Buttons Row
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          OutlinedButton(
+            onClick = onVerifyGraphicsBackend,
+            modifier =
+              Modifier.weight(1f)
+                .minimumInteractiveComponentSize()
+                .testTag("verify_graphics_backend_button"),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.7f)),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Verified,
+              contentDescription = null,
+              tint = LimitlessCyan,
+              modifier = Modifier.size(17.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(
+              text = "Verificar Ativo",
+              style = MaterialTheme.typography.labelLarge,
+              color = ColdWhite,
+            )
+          }
+
+          OutlinedButton(
+            onClick = onRestoreGraphicsBackend,
+            modifier =
+              Modifier.weight(1f)
+                .minimumInteractiveComponentSize()
+                .testTag("restore_graphics_backend_button"),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ReversalRed.copy(alpha = 0.7f)),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.RestartAlt,
+              contentDescription = null,
+              tint = ReversalRed,
+              modifier = Modifier.size(17.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(
+              text = "Restaurar",
+              style = MaterialTheme.typography.labelLarge,
+              color = ColdWhite,
+            )
+          }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
         OutlinedButton(
           onClick = onOpenDeveloperOptions,
           modifier = Modifier.fillMaxWidth().minimumInteractiveComponentSize().testTag("open_dev_options_button"),
@@ -604,6 +828,7 @@ private fun HollowPurpleReactorCard(
   boostActive: Boolean,
   liveFps: Int,
   targetHz: Int,
+  maxHardwareHz: Int,
   backendBadge: String,
   tempC: Float,
   ramPercent: Int,
@@ -737,9 +962,14 @@ private fun HollowPurpleReactorCard(
 
       Spacer(modifier = Modifier.height(12.dp))
       Text(
-        text = "$backendBadge • Alvo ${targetHz}Hz • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C",
+        text =
+          if (boostActive) {
+            "$backendBadge • MÁX ${targetHz}Hz FORÇADO • DESEMPENHO TOTAL • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
+          } else {
+            "$backendBadge • Alvo ${targetHz}Hz (Máx tela: ${maxHardwareHz}Hz) • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
+          },
         style = MaterialTheme.typography.labelMedium,
-        color = MutedLavender,
+        color = if (boostActive) LimitlessCyan else MutedLavender,
         textAlign = TextAlign.Center,
       )
       Spacer(modifier = Modifier.height(14.dp))
@@ -959,7 +1189,7 @@ private fun SystemPermissionsCard(
 ) {
   VoidGlassCard(modifier = modifier) {
     SectionHeader(
-      title = "Permissões do Sistema (v3.0)",
+      title = "Permissões do Sistema",
       subtitle = "Libere alteração do sistema e sobreposição flutuante sobre jogos",
     )
     Spacer(modifier = Modifier.height(10.dp))

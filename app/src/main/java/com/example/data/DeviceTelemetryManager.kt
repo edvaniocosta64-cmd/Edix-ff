@@ -231,17 +231,26 @@ class DeviceTelemetryManager(private val context: Context) {
           activity.windowManager.defaultDisplay
         }
       val currentMode = display?.mode ?: return
+      val sameResModes =
+        display.supportedModes.filter {
+          it.physicalWidth == currentMode.physicalWidth &&
+            it.physicalHeight == currentMode.physicalHeight
+        }
+      val maxSupportedHz = sameResModes.maxOfOrNull { it.refreshRate } ?: currentMode.refreshRate
       val matchingMode =
-        display.supportedModes
-          .filter {
-            it.physicalWidth == currentMode.physicalWidth &&
-              it.physicalHeight == currentMode.physicalHeight
-          }
-          .minByOrNull { abs(it.refreshRate - targetHz.toFloat()) }
+        if (targetHz.toFloat() >= maxSupportedHz - 1f) {
+          sameResModes.maxByOrNull { it.refreshRate }
+        } else {
+          sameResModes.minByOrNull { abs(it.refreshRate - targetHz.toFloat()) }
+        }
       if (matchingMode != null) {
         val params = window.attributes
-        if (params.preferredDisplayModeId != matchingMode.modeId) {
+        val needsUpdate =
+          params.preferredDisplayModeId != matchingMode.modeId ||
+            params.preferredRefreshRate != matchingMode.refreshRate
+        if (needsUpdate) {
           params.preferredDisplayModeId = matchingMode.modeId
+          params.preferredRefreshRate = matchingMode.refreshRate
           window.attributes = params
         }
       }
@@ -251,11 +260,44 @@ class DeviceTelemetryManager(private val context: Context) {
     }
   }
 
+  fun findDisplayModeForHz(targetHz: Int): Pair<Int, Float>? {
+    return try {
+      val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+      @Suppress("DEPRECATION")
+      val display: Display? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          context.display ?: wm.defaultDisplay
+        } else {
+          wm.defaultDisplay
+        }
+      val currentMode = display?.mode ?: return null
+      val sameResModes =
+        display.supportedModes.filter {
+          it.physicalWidth == currentMode.physicalWidth &&
+            it.physicalHeight == currentMode.physicalHeight
+        }
+      if (sameResModes.isEmpty()) return null
+      val maxSupportedHz = sameResModes.maxOfOrNull { it.refreshRate } ?: currentMode.refreshRate
+      val matchingMode =
+        if (targetHz.toFloat() >= maxSupportedHz - 1f) {
+          sameResModes.maxByOrNull { it.refreshRate }
+        } else {
+          sameResModes.minByOrNull { abs(it.refreshRate - targetHz.toFloat()) }
+        }
+      matchingMode?.let { it.modeId to it.refreshRate }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
   fun applySystemRefreshRateIfAllowed(targetHz: Int): Boolean {
     return try {
       if (Settings.System.canWrite(context)) {
         Settings.System.putFloat(context.contentResolver, "min_refresh_rate", targetHz.toFloat())
         Settings.System.putFloat(context.contentResolver, "peak_refresh_rate", targetHz.toFloat())
+        runCatching {
+          Settings.System.putFloat(context.contentResolver, "user_refresh_rate", targetHz.toFloat())
+        }
         true
       } else {
         false

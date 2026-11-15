@@ -64,9 +64,11 @@ class ResolutionPanelService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_STOP -> {
-        serviceScope.launch { repository.setBackgroundResolutionPanelEnabled(false) }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        serviceScope.launch {
+          repository.setBackgroundResolutionPanelEnabled(false)
+          stopForeground(STOP_FOREGROUND_REMOVE)
+          stopSelf()
+        }
         return START_NOT_STICKY
       }
       ACTION_APPLY_65 -> applyScalePreset(65)

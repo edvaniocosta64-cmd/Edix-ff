@@ -63,6 +63,7 @@ import com.example.ui.theme.MutedLavender
 import com.example.ui.theme.ReversalRed
 import com.example.ui.theme.VoidObsidian
 import com.example.ui.theme.VoidSurfaceElevated
+import com.example.ui.theme.WarningAmber
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -226,7 +227,7 @@ fun DomainExpansionOverlay(
         modifier = Modifier.border(1.dp, HollowPurpleBright.copy(alpha = 0.5f), RoundedCornerShape(50)),
       ) {
         Text(
-          text = "INFINIT BOOSTER • v3.0",
+          text = "INFINIT BOOSTER • APP EM TESTE",
           style = MaterialTheme.typography.labelMedium,
           color = HollowPurpleBright,
           modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -296,9 +297,16 @@ fun DomainExpansionOverlay(
       )
       Spacer(modifier = Modifier.height(4.dp))
       Text(
-        text = "Desbloqueando matriz de fluidez • Criador: edix ff",
+        text = "Criador: edix ff",
         style = MaterialTheme.typography.bodyMedium,
-        color = MutedLavender,
+        color = ColdWhite,
+        textAlign = TextAlign.Center,
+      )
+      Spacer(modifier = Modifier.height(2.dp))
+      Text(
+        text = "App em teste — não está na versão completa",
+        style = MaterialTheme.typography.labelSmall,
+        color = WarningAmber,
         textAlign = TextAlign.Center,
       )
     }

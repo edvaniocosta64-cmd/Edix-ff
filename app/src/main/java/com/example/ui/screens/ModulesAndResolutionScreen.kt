@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PhoneIphone
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -62,12 +63,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.model.IphoneTouchConfig
 import com.example.model.PerformanceModule
 import com.example.resolution.ResolutionHelper
 import com.example.resolution.ResolutionPopupActivity
 import com.example.shizuku.ShizukuConnectionState
 import com.example.shizuku.ShizukuModulesCatalog
 import com.example.ui.BoosterUiState
+import com.example.ui.components.IphoneTouchModuleSheet
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.VoidGlassCard
 import com.example.ui.theme.ColdWhite
@@ -94,6 +97,9 @@ fun ModulesAndResolutionScreen(
   onToggleBackgroundPanel: (Boolean) -> Unit,
   onToggleFloatingResolutionOverlay: (Boolean) -> Unit,
   onToggleRootTotalPerformance: (Boolean) -> Unit,
+  onUpdateIphoneTouchConfig: (IphoneTouchConfig) -> Unit,
+  onApplyIphoneTouchNow: () -> Unit,
+  onRestoreIphoneTouchDefaults: () -> Unit,
 ) {
   val context = LocalContext.current
   val settings = state.settings
@@ -101,6 +107,7 @@ fun ModulesAndResolutionScreen(
   val shizukuConnected = state.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
   val isAndroid11Plus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
   var showRootWarningDialog by remember { mutableStateOf(false) }
+  var showIphoneTouchSheet by remember { mutableStateOf(false) }
 
   var scaleSlider by remember(settings.resolutionScalePercent) {
     mutableFloatStateOf(settings.resolutionScalePercent.toFloat().coerceIn(45f, 120f))
@@ -145,7 +152,7 @@ fun ModulesAndResolutionScreen(
         ) {
           SectionHeader(
             title = "Módulos AxManager + VOID RAM",
-            subtitle = "${settings.enabledModuleIds.size}/13 ativos • Escolha individualmente qual ativar",
+            subtitle = "${settings.enabledModuleIds.size}/14 ativos • Escolha individualmente qual ativar",
           )
           Surface(
             shape = RoundedCornerShape(8.dp),
@@ -198,6 +205,71 @@ fun ModulesAndResolutionScreen(
           Spacer(modifier = Modifier.size(8.dp))
           Text(
             text = "Restaurar Tudo (Padrão de Fábrica)",
+            style = MaterialTheme.typography.labelLarge,
+            color = ColdWhite,
+          )
+        }
+      }
+    }
+
+    // Featured AxManager WebUI iPhone Touch Module Card
+    item {
+      val iosActive = settings.iphoneTouchConfig.enabled || ("mod_14_iphone_touch" in settings.enabledModuleIds)
+      VoidGlassCard(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
+        borderColor = if (iosActive) LimitlessCyan else HollowPurpleBright.copy(alpha = 0.65f),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.PhoneIphone,
+              contentDescription = null,
+              tint = if (iosActive) LimitlessCyan else HollowPurpleBright,
+            )
+            Column {
+              Text(
+                text = "Módulo iPhone Touch (AxManager)",
+                style = MaterialTheme.typography.titleMedium,
+                color = ColdWhite,
+              )
+              Text(
+                text =
+                  if (iosActive) "${settings.iphoneTouchConfig.preset.label} • Sensibilidade ${settings.iphoneTouchConfig.pointerSpeed}/7"
+                  else "Animação iOS interna + opções de sensibilidade ativas",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (iosActive) LimitlessCyan else MutedLavender,
+              )
+            }
+          }
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = (if (iosActive) NeonSuccess else WarningAmber).copy(alpha = 0.16f),
+          ) {
+            Text(
+              text = if (iosActive) "ATIVO" else "WEBUI",
+              style = MaterialTheme.typography.labelSmall,
+              color = if (iosActive) NeonSuccess else WarningAmber,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+          }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Button(
+          onClick = { showIphoneTouchSheet = true },
+          modifier = Modifier.fillMaxWidth().height(48.dp).testTag("open_iphone_touch_module_button"),
+          shape = RoundedCornerShape(12.dp),
+          colors = ButtonDefaults.buttonColors(containerColor = HollowPurple),
+        ) {
+          Text(
+            text = "Abrir Módulo iPhone (Animação & Opções)",
             style = MaterialTheme.typography.labelLarge,
             color = ColdWhite,
           )
@@ -271,10 +343,27 @@ fun ModulesAndResolutionScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Text(
           text =
-            "Força governador 'performance' na CPU/GPU (sysfs/su), Fixed Performance (Android 11+), tuning de kernel e remove limite térmico. Pode aquecer o celular.",
+            "Tenta governador 'performance' + I/O/RAM via Root (su/kernel) e força tudo que é possível no sistema sem root (Fixed Perf Android 11+, SurfaceFlinger zero-atraso, Thermal Override, Anti-Doze, toque 220ms e limpeza de RAM). Pode aquecer o celular.",
           style = MaterialTheme.typography.bodyMedium,
           color = MutedLavender,
         )
+
+        if (rootActive && state.shizukuLogs.isNotEmpty()) {
+          Spacer(modifier = Modifier.height(8.dp))
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = VoidObsidian.copy(alpha = 0.85f),
+            border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              text = state.shizukuLogs.joinToString("\n"),
+              style = MaterialTheme.typography.labelSmall,
+              color = LimitlessCyan,
+              modifier = Modifier.padding(10.dp),
+            )
+          }
+        }
 
         if (!canActivateRoot && !rootActive) {
           Spacer(modifier = Modifier.height(8.dp))
@@ -601,7 +690,7 @@ fun ModulesAndResolutionScreen(
       Column(modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp)) {
         SectionHeader(
           title = "Módulos Individuais (Estilo AxManager)",
-          subtitle = "Ative e gerencie cada módulo separadamente (${settings.enabledModuleIds.size}/13 ativos)",
+          subtitle = "Ative e gerencie cada módulo separadamente (${settings.enabledModuleIds.size}/14 ativos)",
         )
       }
     }
@@ -618,13 +707,23 @@ fun ModulesAndResolutionScreen(
     }
 
     item {
-      Text(
-        text = "Infinit Booster v3.0 • Criador: edix ff",
-        style = MaterialTheme.typography.labelMedium,
-        color = MutedLavender,
-        textAlign = TextAlign.Center,
+      Column(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-      )
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        Text(
+          text = "Criador: edix ff",
+          style = MaterialTheme.typography.labelMedium,
+          color = ColdWhite,
+          textAlign = TextAlign.Center,
+        )
+        Text(
+          text = "App em teste — não está na versão completa",
+          style = MaterialTheme.typography.labelSmall,
+          color = WarningAmber,
+          textAlign = TextAlign.Center,
+        )
+      }
     }
   }
 
@@ -673,6 +772,19 @@ fun ModulesAndResolutionScreen(
           Text("Cancelar", color = LimitlessCyan)
         }
       },
+    )
+  }
+
+  if (showIphoneTouchSheet) {
+    IphoneTouchModuleSheet(
+      config = settings.iphoneTouchConfig,
+      shizukuConnected = shizukuConnected,
+      moduleLog = state.moduleLogs["mod_14_iphone_touch"],
+      shizukuLogs = state.shizukuLogs,
+      onUpdateConfig = onUpdateIphoneTouchConfig,
+      onApplyNow = onApplyIphoneTouchNow,
+      onRestoreDefaults = onRestoreIphoneTouchDefaults,
+      onDismiss = { showIphoneTouchSheet = false },
     )
   }
 }
@@ -741,7 +853,7 @@ private fun ModuleCard(
         }
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-          text = "v3.0 • Autor: edix ff • ${if (enabled) "ATIVO" else "INATIVO"}",
+          text = "Criador: edix ff • ${if (enabled) "ATIVO" else "INATIVO"}",
           style = MaterialTheme.typography.labelSmall,
           color = if (enabled) NeonSuccess else MutedLavender,
         )

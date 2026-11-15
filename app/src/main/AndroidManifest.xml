@@ -86,6 +86,15 @@
                 android:value="User-enabled real-time floating FPS and frame pacing telemetry HUD on Android 11+ devices." />
         </service>
 
+        <service
+            android:name=".overlay.GameDpiSessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated per-game DPI and touch response session monitor that applies custom DPI while a selected game is in foreground and restores native display density on exit." />
+        </service>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -21,9 +22,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SportsEsports
+import androidx.compose.material.icons.rounded.TouchApp
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,9 +36,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -50,7 +60,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.InstalledAppItem
+import com.example.model.PerGameConfig
 import com.example.ui.BoosterUiState
+import kotlin.math.roundToInt
 import com.example.ui.components.AppDrawableIcon
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.VoidGlassCard
@@ -72,11 +84,13 @@ fun GamesLauncherScreen(
   loadIcon: (String) -> Drawable?,
   onAddGame: (String) -> Unit,
   onRemoveGame: (String) -> Unit,
+  onUpdatePerGameConfig: (PerGameConfig) -> Unit,
   onLaunchGame: (InstalledAppItem) -> Unit,
   onRefreshApps: () -> Unit,
 ) {
   var showPickerSheet by remember { mutableStateOf(false) }
   var searchQuery by remember { mutableStateOf("") }
+  var expandedGamePkg by remember { mutableStateOf<String?>(null) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -158,6 +172,11 @@ fun GamesLauncherScreen(
     } else {
       items(state.addedGames, key = { it.packageName }) { game ->
         val icon = remember(game.packageName) { loadIcon(game.packageName) }
+        val gameCfg =
+          state.settings.perGameConfigs[game.packageName]
+            ?: PerGameConfig(packageName = game.packageName)
+        val isExpanded = expandedGamePkg == game.packageName
+
         VoidGlassCard(
           modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
           borderColor = HollowPurpleBright.copy(alpha = 0.45f),
@@ -177,9 +196,10 @@ fun GamesLauncherScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
               )
+              val dpiTag = if (gameCfg.customDpi != null) "DPI ${gameCfg.customDpi}" else "DPI Padrão"
+              val touchTag = if (gameCfg.touchScriptEnabled) "Touch Nv.${gameCfg.touchSensitivity}" else "Touch Padrão"
               Text(
-                text =
-                  "${state.settings.graphicsBackend.title} • ${state.settings.targetRefreshRate.label}",
+                text = "${state.settings.graphicsBackend.title} • $dpiTag • $touchTag",
                 style = MaterialTheme.typography.labelMedium,
                 color = LimitlessCyan,
               )
@@ -194,6 +214,246 @@ fun GamesLauncherScreen(
                 contentDescription = "Remover ${game.label}",
                 tint = MutedLavender,
               )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // Toggleable Per-Game Exclusive DPI (400-1440) & Touch Script Panel
+          OutlinedButton(
+            onClick = {
+              expandedGamePkg = if (isExpanded) null else game.packageName
+            },
+            modifier = Modifier.fillMaxWidth().minimumInteractiveComponentSize(),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, if (isExpanded) LimitlessCyan else VoidBorder),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Tune,
+              contentDescription = null,
+              tint = LimitlessCyan,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(
+              text = "DPI só no Jogo (400–1440) & Script Touch",
+              style = MaterialTheme.typography.labelLarge,
+              color = ColdWhite,
+              modifier = Modifier.weight(1f),
+            )
+            Icon(
+              imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+              contentDescription = null,
+              tint = MutedLavender,
+            )
+          }
+
+          if (isExpanded) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = VoidObsidian.copy(alpha = 0.8f),
+              border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.45f)),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = "DPI Exclusivo Dentro do Jogo",
+                      style = MaterialTheme.typography.titleSmall,
+                      color = ColdWhite,
+                    )
+                    Text(
+                      text = "Ativa de 400 a 1440 ao entrar e restaura o normal ao sair",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MutedLavender,
+                    )
+                  }
+                  Switch(
+                    checked = gameCfg.customDpi != null,
+                    onCheckedChange = { enableDpi ->
+                      onUpdatePerGameConfig(
+                        gameCfg.copy(customDpi = if (enableDpi) 720 else null)
+                      )
+                    },
+                    colors =
+                      SwitchDefaults.colors(
+                        checkedThumbColor = VoidObsidian,
+                        checkedTrackColor = LimitlessCyan,
+                      ),
+                  )
+                }
+
+                if (gameCfg.customDpi != null) {
+                  val activeDpi = gameCfg.customDpi.coerceIn(400, 1440)
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Text(
+                      text = "DPI no Jogo: $activeDpi",
+                      style = MaterialTheme.typography.titleMedium,
+                      color = LimitlessCyan,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                      Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = VoidSurfaceElevated,
+                        border = BorderStroke(1.dp, VoidBorder),
+                        modifier =
+                          Modifier.clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                              onUpdatePerGameConfig(
+                                gameCfg.copy(customDpi = (activeDpi - 20).coerceIn(400, 1440))
+                              )
+                            },
+                      ) {
+                        Text(
+                          text = "-20",
+                          style = MaterialTheme.typography.labelMedium,
+                          color = ColdWhite,
+                          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                      }
+                      Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = VoidSurfaceElevated,
+                        border = BorderStroke(1.dp, VoidBorder),
+                        modifier =
+                          Modifier.clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                              onUpdatePerGameConfig(
+                                gameCfg.copy(customDpi = (activeDpi + 20).coerceIn(400, 1440))
+                              )
+                            },
+                      ) {
+                        Text(
+                          text = "+20",
+                          style = MaterialTheme.typography.labelMedium,
+                          color = ColdWhite,
+                          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                      }
+                    }
+                  }
+
+                  Slider(
+                    value = activeDpi.toFloat(),
+                    onValueChange = { v ->
+                      val rounded = ((v / 10f).roundToInt() * 10).coerceIn(400, 1440)
+                      onUpdatePerGameConfig(gameCfg.copy(customDpi = rounded))
+                    },
+                    valueRange = 400f..1440f,
+                    colors =
+                      SliderDefaults.colors(
+                        thumbColor = LimitlessCyan,
+                        activeTrackColor = HollowPurpleBright,
+                      ),
+                  )
+
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  ) {
+                    listOf(480, 600, 720, 960, 1200, 1440).forEach { presetDpi ->
+                      val isPicked = activeDpi == presetDpi
+                      Surface(
+                        modifier =
+                          Modifier.weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                              onUpdatePerGameConfig(gameCfg.copy(customDpi = presetDpi))
+                            },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isPicked) HollowPurple.copy(alpha = 0.4f) else VoidSurfaceElevated,
+                        border = BorderStroke(1.dp, if (isPicked) LimitlessCyan else VoidBorder),
+                      ) {
+                        Text(
+                          text = "$presetDpi",
+                          style = MaterialTheme.typography.labelSmall,
+                          color = if (isPicked) ColdWhite else MutedLavender,
+                          textAlign = TextAlign.Center,
+                          modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                      }
+                    }
+                  }
+                }
+
+                // Per-Game Touch Script
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Rounded.TouchApp,
+                      contentDescription = null,
+                      tint = if (gameCfg.touchScriptEnabled) NeonSuccess else MutedLavender,
+                    )
+                    Column {
+                      Text(
+                        text = "Script de Touch no Jogo",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = ColdWhite,
+                      )
+                      Text(
+                        text = "Pointer Speed + zero input-lag exclusivo na partida",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MutedLavender,
+                      )
+                    }
+                  }
+                  Switch(
+                    checked = gameCfg.touchScriptEnabled,
+                    onCheckedChange = { enableTouch ->
+                      onUpdatePerGameConfig(gameCfg.copy(touchScriptEnabled = enableTouch))
+                    },
+                    colors =
+                      SwitchDefaults.colors(
+                        checkedThumbColor = VoidObsidian,
+                        checkedTrackColor = NeonSuccess,
+                      ),
+                  )
+                }
+
+                if (gameCfg.touchScriptEnabled) {
+                  Text(
+                    text = "Sensibilidade do Script Touch: ${gameCfg.touchSensitivity}/7",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NeonSuccess,
+                  )
+                  Slider(
+                    value = gameCfg.touchSensitivity.toFloat(),
+                    onValueChange = { v ->
+                      onUpdatePerGameConfig(
+                        gameCfg.copy(touchSensitivity = v.roundToInt().coerceIn(1, 7))
+                      )
+                    },
+                    valueRange = 1f..7f,
+                    steps = 5,
+                    colors =
+                      SliderDefaults.colors(
+                        thumbColor = NeonSuccess,
+                        activeTrackColor = LimitlessCyan,
+                      ),
+                  )
+                }
+              }
             }
           }
 
@@ -274,7 +534,7 @@ fun GamesLauncherScreen(
           }
 
         LazyColumn(
-          modifier = Modifier.fillMaxWidth().height(380.dp),
+          modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           items(filtered, key = { it.packageName }) { app ->

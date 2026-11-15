@@ -29,7 +29,6 @@ import com.example.R
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.shizuku.ShizukuBridge
-import com.example.shizuku.ShizukuConnectionState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -114,8 +113,10 @@ class FloatingFpsMeterService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
-      scope.launch { repository.setFloatingFpsMeterEnabled(false) }
-      stopMeterAndSelf()
+      scope.launch {
+        repository.setFloatingFpsMeterEnabled(false)
+        stopMeterAndSelf()
+      }
       return START_NOT_STICKY
     }
 
@@ -209,8 +210,10 @@ class FloatingFpsMeterService : Service() {
         typeface = Typeface.DEFAULT_BOLD
         setPadding(dp(4), 0, 0, 0)
         setOnClickListener {
-          scope.launch { repository.setFloatingFpsMeterEnabled(false) }
-          stopMeterAndSelf()
+          scope.launch {
+            repository.setFloatingFpsMeterEnabled(false)
+            stopMeterAndSelf()
+          }
         }
       }
     root.addView(close)
@@ -259,9 +262,7 @@ class FloatingFpsMeterService : Service() {
     meterJob =
       scope.launch {
         while (isActive) {
-          val shizukuConnected = shizukuBridge.status.value.connectionState == ShizukuConnectionState.CONNECTED
-          val (sfFps, topPkg) =
-            if (shizukuConnected) shizukuBridge.sampleAndroid11FpsTelemetry() else null to null
+          val (sfFps, topPkg) = shizukuBridge.sampleAndroid11FpsTelemetry()
           val displayFps = sfFps ?: choreoFps
           val t = telemetryManager.readTelemetry(displayFps, choreoFrameMs)
 

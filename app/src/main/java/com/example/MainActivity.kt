@@ -163,6 +163,7 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
     state.settings.targetRefreshRate,
     state.settings.fpsUnlocked,
     state.settings.boostActive,
+    state.telemetry.maxDisplayHz,
   ) {
     viewModel.applyWindowPerformance(activity, state.settings)
   }
@@ -218,12 +219,13 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
           }
 
           Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            val animDuration =
+            val baseDuration =
               when (state.settings.targetRefreshRate.hz) {
                 120 -> 180
                 90 -> 210
                 else -> 250
               }
+            val animDuration = (baseDuration * state.settings.animationScale).roundToInt().coerceIn(0, 350)
             AnimatedContent(
               targetState = currentTab,
               transitionSpec = {
@@ -242,7 +244,11 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     onTogglePerformanceMax = { viewModel.setPerformanceMax(it, activity) },
                     onToggleIgnoreThermal = { viewModel.setIgnoreThermalLimit(it, activity) },
                     onSelectRefreshRate = { viewModel.selectRefreshRate(it, activity) },
+                    onSelectAnimationScale = { viewModel.selectAnimationScale(it) },
                     onSelectGraphicsBackend = { viewModel.selectGraphicsBackend(it) },
+                    onActivateGraphicsBackend = { viewModel.activateSelectedGraphicsBackend() },
+                    onVerifyGraphicsBackend = { viewModel.verifyGraphicsBackendStatus() },
+                    onRestoreGraphicsBackend = { viewModel.restoreGraphicsBackendDefaults() },
                     onOpenDeveloperOptions = { viewModel.openDeveloperGraphicsSettings(context) },
                     onShizukuAction = { viewModel.connectOrApplyShizuku(context) },
                     onRefreshShizuku = { viewModel.refreshShizuku() },
@@ -301,6 +307,15 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     onToggleRootTotalPerformance = { enable ->
                       viewModel.setRootTotalPerformance(enable, activity)
                     },
+                    onUpdateIphoneTouchConfig = { cfg ->
+                      viewModel.updateIphoneTouchConfig(cfg)
+                    },
+                    onApplyIphoneTouchNow = {
+                      viewModel.applyIphoneTouchModuleNow()
+                    },
+                    onRestoreIphoneTouchDefaults = {
+                      viewModel.restoreIphoneTouchDefaults()
+                    },
                   )
                 AppTab.GAMES ->
                   GamesLauncherScreen(
@@ -308,6 +323,7 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     loadIcon = { pkg -> viewModel.loadAppIcon(pkg) },
                     onAddGame = { pkg -> viewModel.addGamePackage(pkg) },
                     onRemoveGame = { pkg -> viewModel.removeGamePackage(pkg) },
+                    onUpdatePerGameConfig = { cfg -> viewModel.updatePerGameConfig(cfg) },
                     onLaunchGame = { game ->
                       viewModel.launchGameWithBoost(game.packageName, game.label, activity)
                     },

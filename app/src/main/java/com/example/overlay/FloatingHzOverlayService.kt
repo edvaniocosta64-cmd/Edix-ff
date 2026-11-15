@@ -21,6 +21,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -29,8 +30,11 @@ import com.example.MainActivity
 import com.example.R
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
+import com.example.model.GraphicsBackend
 import com.example.model.RefreshRateOption
 import com.example.shizuku.ShizukuBridge
+import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,17 +76,30 @@ class FloatingHzOverlayService : Service() {
 
   private var overlayRoot: LinearLayout? = null
   private var layoutParams: WindowManager.LayoutParams? = null
+
+  private var miniPillContainer: LinearLayout? = null
+  private var expandedContainer: LinearLayout? = null
+  private var miniPillText: TextView? = null
   private var statsTextView: TextView? = null
-  private var bodyRow: LinearLayout? = null
-  private var minimizeBtn: TextView? = null
-  private var btn60: TextView? = null
-  private var btn90: TextView? = null
-  private var btn120: TextView? = null
-  private var pulseDot: View? = null
-  private var pulseAnimator: ObjectAnimator? = null
+
+  private val hzButtons = mutableMapOf<Int, TextView>()
+  private val backendButtons = mutableMapOf<GraphicsBackend, TextView>()
+  private var restoreRenderBtn: TextView? = null
+  private val animButtons = mutableListOf<Pair<Float, TextView>>()
+
+  private var miniPulseDot: View? = null
+  private var headerPulseDot: View? = null
+  private var miniPulseAnimator: ObjectAnimator? = null
+  private var headerPulseAnimator: ObjectAnimator? = null
   private var telemetryJob: Job? = null
+  private var settingsSyncJob: Job? = null
+
   private var selectedHz: Int = 120
-  private var isMinimized = false
+  private var selectedBackend: GraphicsBackend = GraphicsBackend.VULKAN_MAX
+  private var selectedAnimScale: Float = 0.25f
+  private var isGameTurboMini: Boolean = false
+  private var actionToastText: String? = null
+  private var actionToastExpiresAt: Long = 0L
 
   override fun onCreate() {
     super.onCreate()
@@ -95,8 +112,10 @@ class FloatingHzOverlayService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
-      scope.launch { repository.setFloatingHzOverlayEnabled(false) }
-      stopOverlayAndSelf()
+      scope.launch {
+        repository.setFloatingHzOverlayEnabled(false)
+        stopOverlayAndSelf()
+      }
       return START_NOT_STICKY
     }
 
@@ -119,15 +138,19 @@ class FloatingHzOverlayService : Service() {
 
     if (overlayRoot == null) {
       scope.launch {
-        selectedHz = repository.settingsFlow.first().targetRefreshRate.hz
-        attachRedFloatingPanel()
+        val initial = repository.settingsFlow.first()
+        selectedHz = initial.targetRefreshRate.hz
+        selectedBackend = initial.graphicsBackend
+        selectedAnimScale = initial.animationScale
+        attachGameTurboPanel()
         startLiveTelemetryLoop()
+        startSettingsSyncLoop()
       }
     }
     return START_STICKY
   }
 
-  private fun attachRedFloatingPanel() {
+  private fun attachGameTurboPanel() {
     val overlayType =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -146,165 +169,35 @@ class FloatingHzOverlayService : Service() {
         PixelFormat.TRANSLUCENT,
       ).apply {
         gravity = Gravity.TOP or Gravity.START
-        x = dp(18)
-        y = dp(120)
+        x = dp(12)
+        y = dp(96)
         preferredRefreshRate = selectedHz.toFloat()
+        telemetryManager.findDisplayModeForHz(selectedHz)?.let { (modeId, rate) ->
+          preferredDisplayModeId = modeId
+          preferredRefreshRate = rate
+        }
       }
     layoutParams = params
-
-    val rootBg =
-      GradientDrawable(
-        GradientDrawable.Orientation.TL_BR,
-        intArrayOf(Color.parseColor("#2A050D"), Color.parseColor("#110206")),
-      ).apply {
-        cornerRadius = dp(18).toFloat()
-        setStroke(dp(2), Color.parseColor("#FF1E42"))
-      }
 
     val root =
       LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rootBg
-        elevation = dp(12).toFloat()
-        setPadding(dp(12), dp(10), dp(12), dp(10))
       }
 
-    // Header bar (Draggable + Crimson Pulse + Minimize + Close)
-    val header =
-      LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-      }
+    // 1. Ultra-compact Game Turbo Mini Pill (doesn't block game HUD)
+    val pill = buildGameTurboMiniPill()
+    miniPillContainer = pill
+    root.addView(pill)
 
-    val dot =
-      View(this).apply {
-        background =
-          GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#FF2A5F"))
-          }
-      }
-    pulseDot = dot
-    header.addView(dot, LinearLayout.LayoutParams(dp(9), dp(9)).apply { rightMargin = dp(7) })
-
-    pulseAnimator =
-      ObjectAnimator.ofFloat(dot, View.ALPHA, 1f, 0.25f).apply {
-        duration = 650L
-        repeatCount = ValueAnimator.INFINITE
-        repeatMode = ValueAnimator.REVERSE
-        start()
-      }
-
-    val title =
-      TextView(this).apply {
-        text = "INFINIT HZ • v3.0"
-        setTextColor(Color.parseColor("#FFEDF1"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        typeface = Typeface.DEFAULT_BOLD
-      }
-    header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-    val minBtn =
-      TextView(this).apply {
-        text = "—"
-        setTextColor(Color.parseColor("#FF8FA3"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-        typeface = Typeface.DEFAULT_BOLD
-        setPadding(dp(10), dp(2), dp(8), dp(2))
-        setOnClickListener { toggleMinimize() }
-      }
-    minimizeBtn = minBtn
-    header.addView(minBtn)
-
-    val closeBtn =
-      TextView(this).apply {
-        text = "✕"
-        setTextColor(Color.parseColor("#FF4D6D"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-        typeface = Typeface.DEFAULT_BOLD
-        setPadding(dp(8), dp(2), dp(2), dp(2))
-        setOnClickListener {
-          scope.launch { repository.setFloatingHzOverlayEnabled(false) }
-          stopOverlayAndSelf()
-        }
-      }
-    header.addView(closeBtn)
-    root.addView(header)
-
-    // Live Telemetry Status Line
-    val stats =
-      TextView(this).apply {
-        text = "${selectedHz}Hz ATIVO • Lendo sensor..."
-        setTextColor(Color.parseColor("#FF8FA3"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-        typeface = Typeface.MONOSPACE
-        setPadding(0, dp(4), 0, dp(8))
-      }
-    statsTextView = stats
-    root.addView(stats)
-
-    // 60 / 90 / 120Hz Crimson Selector Row
-    val row =
-      LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER
-      }
-    val b60 = createHzChip("60 Hz", 60)
-    val b90 = createHzChip("90 Hz", 90)
-    val b120 = createHzChip("120 Hz", 120)
-    btn60 = b60
-    btn90 = b90
-    btn120 = b120
-
-    val chipLp =
-      LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        .apply { rightMargin = dp(6) }
-    row.addView(b60, chipLp)
-    row.addView(b90, chipLp)
-    row.addView(
-      b120,
-      LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-      ),
-    )
-    bodyRow = row
-    root.addView(row)
-
-    // Drag gesture on root
-    root.setOnTouchListener(
-      object : View.OnTouchListener {
-        private var initialX = 0
-        private var initialY = 0
-        private var touchX = 0f
-        private var touchY = 0f
-
-        override fun onTouch(v: View?, event: MotionEvent): Boolean {
-          val lp = layoutParams ?: return false
-          when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-              initialX = lp.x
-              initialY = lp.y
-              touchX = event.rawX
-              touchY = event.rawY
-              return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-              lp.x = initialX + (event.rawX - touchX).toInt()
-              lp.y = initialY + (event.rawY - touchY).toInt()
-              try {
-                windowManager.updateViewLayout(root, lp)
-              } catch (_: Exception) {}
-              return true
-            }
-          }
-          return false
-        }
-      }
-    )
+    // 2. Compact Game Turbo Expanded Floating Panel
+    val expanded = buildExpandedGameTurboPanel()
+    expandedContainer = expanded
+    root.addView(expanded)
 
     overlayRoot = root
-    updateHzChipsVisual()
+    applyDisplayModeVisibility()
+    updateAllChipVisuals()
+
     try {
       windowManager.addView(root, params)
     } catch (_: Exception) {
@@ -312,24 +205,274 @@ class FloatingHzOverlayService : Service() {
     }
   }
 
-  private fun createHzChip(label: String, hz: Int): TextView {
+  private fun buildGameTurboMiniPill(): LinearLayout {
+    val pillBg =
+      GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(Color.parseColor("#E6210514"), Color.parseColor("#E611030B")),
+      ).apply {
+        cornerRadius = dp(20).toFloat()
+        setStroke(dp(1), Color.parseColor("#FF2A5F"))
+      }
+
+    val pill =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = pillBg
+        elevation = dp(10).toFloat()
+        setPadding(dp(10), dp(7), dp(11), dp(7))
+      }
+
+    val dot = createPulseDot()
+    miniPulseDot = dot
+    miniPulseAnimator = createPulseAnimator(dot)
+    pill.addView(dot, LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(6) })
+
+    val txt =
+      TextView(this).apply {
+        text = "GT • ${selectedHz}Hz"
+        setTextColor(Color.parseColor("#FFF0F5"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        typeface = Typeface.DEFAULT_BOLD
+      }
+    miniPillText = txt
+    pill.addView(txt)
+
+    attachDragAndTapListener(
+      target = pill,
+      onTap = {
+        isGameTurboMini = false
+        applyDisplayModeVisibility()
+        clampWindowPositionToScreen()
+        telemetryManager.pulseHaptic(false)
+      },
+    )
+
+    return pill
+  }
+
+  private fun buildExpandedGameTurboPanel(): LinearLayout {
+    val panelBg =
+      GradientDrawable(
+        GradientDrawable.Orientation.TL_BR,
+        intArrayOf(Color.parseColor("#EB1D0412"), Color.parseColor("#EB0C0208")),
+      ).apply {
+        cornerRadius = dp(16).toFloat()
+        setStroke(dp(1), Color.parseColor("#FF2A5F"))
+      }
+
+    val panel =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = panelBg
+        elevation = dp(12).toFloat()
+        setPadding(dp(10), dp(8), dp(10), dp(9))
+        layoutParams =
+          LinearLayout.LayoutParams(dp(248), LinearLayout.LayoutParams.WRAP_CONTENT)
+      }
+
+    // Header (Draggable + Game Turbo Title + Minimize to GT Pill + Close)
+    val header =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+      }
+
+    val dot = createPulseDot()
+    headerPulseDot = dot
+    headerPulseAnimator = createPulseAnimator(dot)
+    header.addView(dot, LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(6) })
+
+    val title =
+      TextView(this).apply {
+        text = "GAME TURBO • INFINIT"
+        setTextColor(Color.parseColor("#FFF0F5"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        typeface = Typeface.DEFAULT_BOLD
+      }
+    header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+    val miniBtn =
+      TextView(this).apply {
+        text = "GT —"
+        setTextColor(Color.parseColor("#00E5FF"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+        typeface = Typeface.DEFAULT_BOLD
+        setPadding(dp(8), dp(4), dp(8), dp(4))
+        background =
+          GradientDrawable().apply {
+            cornerRadius = dp(8).toFloat()
+            setColor(Color.parseColor("#2200E5FF"))
+            setStroke(dp(1), Color.parseColor("#6600E5FF"))
+          }
+        setOnClickListener {
+          isGameTurboMini = true
+          applyDisplayModeVisibility()
+          telemetryManager.pulseHaptic(false)
+        }
+      }
+    header.addView(miniBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+      rightMargin = dp(6)
+    })
+
+    val closeBtn =
+      TextView(this).apply {
+        text = "✕"
+        setTextColor(Color.parseColor("#FF5C7A"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        typeface = Typeface.DEFAULT_BOLD
+        setPadding(dp(7), dp(3), dp(5), dp(3))
+        setOnClickListener {
+          scope.launch {
+            repository.setFloatingHzOverlayEnabled(false)
+            stopOverlayAndSelf()
+          }
+        }
+      }
+    header.addView(closeBtn)
+
+    attachDragAndTapListener(target = header, onTap = null)
+    panel.addView(header)
+
+    // Slim live readout line
+    val stats =
+      TextView(this).apply {
+        text = "Tela: ${selectedHz}Hz • Lendo sensor..."
+        setTextColor(Color.parseColor("#FF9EB2"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+        typeface = Typeface.MONOSPACE
+        maxLines = 1
+        setPadding(0, dp(4), 0, dp(6))
+      }
+    statsTextView = stats
+    panel.addView(stats)
+
+    // Section 1: Real-Time Refresh Rate (60 / 90 / 120 [+ 144 if supported])
+    panel.addView(createMicroSectionLabel("TAXA DE ATUALIZAÇÃO (TEMPO REAL)"))
+    val hzRow =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+      }
+    val deviceMaxHz = telemetryManager.readTelemetry(selectedHz, 16.6f).maxDisplayHz
+    val hzValues = if (deviceMaxHz >= 144) listOf(60, 90, 120, 144) else listOf(60, 90, 120)
+    hzButtons.clear()
+    hzValues.forEachIndexed { idx, hz ->
+      val chip = createCompactChip("${hz}Hz") { applyHzRealtime(hz) }
+      hzButtons[hz] = chip
+      val lp =
+        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+          if (idx < hzValues.lastIndex) rightMargin = dp(4)
+        }
+      hzRow.addView(chip, lp)
+    }
+    panel.addView(hzRow)
+
+    // Section 2: In-Game Graphics Rendering (Vulkan / SkiaGL / ANGLE + Restore)
+    panel.addView(createMicroSectionLabel("RENDERIZAÇÃO NO JOGO"))
+    val renderRow =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+      }
+    backendButtons.clear()
+    val backendSpecs =
+      listOf(
+        GraphicsBackend.VULKAN_MAX to "Vulkan",
+        GraphicsBackend.SKIAGL_MAX to "SkiaGL",
+        GraphicsBackend.ANGLE_MAX to "ANGLE",
+      )
+    backendSpecs.forEach { (backend, shortLabel) ->
+      val chip = createCompactChip(shortLabel) { applyGraphicsRealtime(backend) }
+      backendButtons[backend] = chip
+      val lp =
+        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+          rightMargin = dp(4)
+        }
+      renderRow.addView(chip, lp)
+    }
+    val restoreChip =
+      createCompactChip("↺") { restoreGraphicsRealtime() }
+    restoreRenderBtn = restoreChip
+    renderRow.addView(
+      restoreChip,
+      LinearLayout.LayoutParams(dp(34), LinearLayout.LayoutParams.WRAP_CONTENT),
+    )
+    panel.addView(renderRow)
+
+    // Section 3: Animation Scale (ONLY 3 OPTIONS: 0,0 | 0,25 | 0,5)
+    panel.addView(createMicroSectionLabel("ANIMAÇÃO (SOMENTE 0,0 • 0,25 • 0,5)"))
+    val animRow =
+      LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+      }
+    animButtons.clear()
+    val animOptions =
+      listOf(
+        0.0f to "0,0",
+        0.25f to "0,25",
+        0.5f to "0,5",
+      )
+    animOptions.forEachIndexed { idx, (scaleVal, label) ->
+      val chip = createCompactChip(label) { applyAnimationScaleRealtime(scaleVal, label) }
+      animButtons += scaleVal to chip
+      val lp =
+        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+          if (idx < animOptions.lastIndex) rightMargin = dp(4)
+        }
+      animRow.addView(chip, lp)
+    }
+    panel.addView(animRow)
+
+    return panel
+  }
+
+  private fun createMicroSectionLabel(label: String): TextView {
     return TextView(this).apply {
       text = label
-      setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+      setTextColor(Color.parseColor("#CBB6E8"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.5f)
       typeface = Typeface.DEFAULT_BOLD
-      setPadding(dp(12), dp(8), dp(12), dp(8))
-      setOnClickListener { applyHzRealtime(hz) }
+      setPadding(0, dp(5), 0, dp(3))
     }
+  }
+
+  private fun createCompactChip(label: String, onClick: () -> Unit): TextView {
+    return TextView(this).apply {
+      text = label
+      gravity = Gravity.CENTER
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+      typeface = Typeface.DEFAULT_BOLD
+      setPadding(dp(4), dp(6), dp(4), dp(6))
+      maxLines = 1
+      setOnClickListener { onClick() }
+    }
+  }
+
+  private fun applyDisplayModeVisibility() {
+    miniPillContainer?.visibility = if (isGameTurboMini) View.VISIBLE else View.GONE
+    expandedContainer?.visibility = if (isGameTurboMini) View.GONE else View.VISIBLE
   }
 
   private fun applyHzRealtime(hz: Int) {
     selectedHz = hz
-    updateHzChipsVisual()
+    updateAllChipVisuals()
     telemetryManager.pulseHaptic(false)
 
-    val option = RefreshRateOption.entries.firstOrNull { it.hz == hz } ?: RefreshRateOption.HZ_120
+    val option =
+      when {
+        hz >= 120 -> RefreshRateOption.HZ_120
+        hz >= 90 -> RefreshRateOption.HZ_90
+        else -> RefreshRateOption.HZ_60
+      }
+
     layoutParams?.let { lp ->
-      lp.preferredRefreshRate = hz.toFloat()
+      val modeMatch = telemetryManager.findDisplayModeForHz(hz)
+      if (modeMatch != null) {
+        lp.preferredDisplayModeId = modeMatch.first
+        lp.preferredRefreshRate = modeMatch.second
+      } else {
+        lp.preferredRefreshRate = hz.toFloat()
+      }
       overlayRoot?.let { root ->
         try {
           windowManager.updateViewLayout(root, lp)
@@ -341,35 +484,180 @@ class FloatingHzOverlayService : Service() {
 
     scope.launch {
       repository.setTargetRefreshRate(option)
-      val currentSettings = repository.settingsFlow.first().copy(targetRefreshRate = option, fpsUnlocked = true)
-      shizukuBridge.applyBoostProfile(currentSettings)
+      repository.setFpsUnlocked(true)
+      val spec = telemetryManager.readNativeScreenSpec()
+      val res = shizukuBridge.applyRealtimeRefreshRate(hz, spec.widthPx, spec.heightPx)
+      showTransientAction(
+        if (res != null) "✓ ${hz}Hz aplicado em tempo real"
+        else "⚠ ${hz}Hz na janela • Conecte Shizuku p/ forçar tela",
+      )
+      delay(220L)
       refreshTelemetryLine()
     }
   }
 
-  private fun updateHzChipsVisual() {
-    listOf(60 to btn60, 90 to btn90, 120 to btn120).forEach { (hz, view) ->
-      val active = selectedHz == hz
-      val bg =
-        GradientDrawable().apply {
-          cornerRadius = dp(10).toFloat()
-          if (active) {
-            setColor(Color.parseColor("#FF1E42"))
-            setStroke(dp(1), Color.parseColor("#FFCCD5"))
-          } else {
-            setColor(Color.parseColor("#2E0A14"))
-            setStroke(dp(1), Color.parseColor("#7A162B"))
-          }
+  private fun applyGraphicsRealtime(backend: GraphicsBackend) {
+    selectedBackend = backend
+    updateAllChipVisuals()
+    telemetryManager.pulseHaptic(false)
+
+    scope.launch {
+      repository.setGraphicsBackend(backend)
+      val currentSettings = repository.settingsFlow.first()
+      val topPkg = shizukuBridge.getTopResumedPackage()
+      val targetPkgs =
+        if (!topPkg.isNullOrBlank() && topPkg != packageName) {
+          currentSettings.addedGamePackages + topPkg
+        } else {
+          currentSettings.addedGamePackages
         }
-      view?.background = bg
-      view?.setTextColor(if (active) Color.WHITE else Color.parseColor("#FFB3C1"))
+      val (msg, status) = shizukuBridge.applyGraphicsBackend(backend, targetPkgs)
+      val shortName =
+        when (backend) {
+          GraphicsBackend.VULKAN_MAX -> "Vulkan"
+          GraphicsBackend.SKIAGL_MAX -> "SkiaGL"
+          GraphicsBackend.ANGLE_MAX -> "ANGLE"
+        }
+      showTransientAction(
+        if (msg != null && status.verifiedViaShizuku) "✓ $shortName ativo no jogo!"
+        else "⚠ Conecte Shizuku para ativar $shortName",
+      )
+      refreshTelemetryLine()
     }
   }
 
-  private fun toggleMinimize() {
-    isMinimized = !isMinimized
-    bodyRow?.visibility = if (isMinimized) View.GONE else View.VISIBLE
-    minimizeBtn?.text = if (isMinimized) "+" else "—"
+  private fun restoreGraphicsRealtime() {
+    telemetryManager.pulseHaptic(false)
+    scope.launch {
+      val currentSettings = repository.settingsFlow.first()
+      repository.setGraphicsBackend(GraphicsBackend.VULKAN_MAX)
+      val (msg, _) = shizukuBridge.restoreGraphicsBackendDefaults(currentSettings.addedGamePackages)
+      showTransientAction(
+        if (msg != null) "✓ Render padrão restaurado!"
+        else "⚠ Conecte Shizuku para restaurar",
+      )
+      refreshTelemetryLine()
+    }
+  }
+
+  private fun applyAnimationScaleRealtime(scale: Float, label: String) {
+    selectedAnimScale = scale
+    updateAllChipVisuals()
+    telemetryManager.pulseHaptic(false)
+
+    scope.launch {
+      repository.setAnimationScale(scale)
+      val msg = shizukuBridge.applyAnimationScale(scale)
+      showTransientAction(
+        if (msg != null) "✓ Animação ${label}x aplicada!"
+        else "⚠ ${label}x salvo • Conecte Shizuku",
+      )
+      refreshTelemetryLine()
+    }
+  }
+
+  private fun showTransientAction(text: String) {
+    actionToastText = text
+    actionToastExpiresAt = System.currentTimeMillis() + 2600L
+    statsTextView?.text = text
+  }
+
+  private fun updateAllChipVisuals() {
+    // Hz chips
+    hzButtons.forEach { (hz, view) ->
+      val active = selectedHz == hz
+      styleChip(
+        view = view,
+        active = active,
+        activeFill = "#FF1E42",
+        activeBorder = "#FFCCD5",
+        inactiveFill = "#2A0916",
+        inactiveBorder = "#6E1632",
+        inactiveText = "#FFB3C1",
+      )
+    }
+
+    // Graphics renderer chips
+    backendButtons.forEach { (backend, view) ->
+      val active = selectedBackend == backend
+      styleChip(
+        view = view,
+        active = active,
+        activeFill = "#7B2CBF",
+        activeBorder = "#00E5FF",
+        inactiveFill = "#1C0B2B",
+        inactiveBorder = "#4A2170",
+        inactiveText = "#D6C4F0",
+      )
+    }
+    restoreRenderBtn?.let { btn ->
+      styleChip(
+        view = btn,
+        active = false,
+        activeFill = "#FF1E42",
+        activeBorder = "#FFCCD5",
+        inactiveFill = "#230B18",
+        inactiveBorder = "#7A2842",
+        inactiveText = "#FF8FA3",
+      )
+    }
+
+    // Animation scale chips (only 0.0, 0.25, 0.5)
+    animButtons.forEach { (scale, view) ->
+      val active = abs(selectedAnimScale - scale) < 0.04f
+      styleChip(
+        view = view,
+        active = active,
+        activeFill = "#008FA3",
+        activeBorder = "#A6F6FF",
+        inactiveFill = "#0E1D29",
+        inactiveBorder = "#234F63",
+        inactiveText = "#9EE8F5",
+      )
+    }
+  }
+
+  private fun styleChip(
+    view: TextView,
+    active: Boolean,
+    activeFill: String,
+    activeBorder: String,
+    inactiveFill: String,
+    inactiveBorder: String,
+    inactiveText: String,
+  ) {
+    view.background =
+      GradientDrawable().apply {
+        cornerRadius = dp(8).toFloat()
+        if (active) {
+          setColor(Color.parseColor(activeFill))
+          setStroke(dp(1), Color.parseColor(activeBorder))
+        } else {
+          setColor(Color.parseColor(inactiveFill))
+          setStroke(dp(1), Color.parseColor(inactiveBorder))
+        }
+      }
+    view.setTextColor(if (active) Color.WHITE else Color.parseColor(inactiveText))
+  }
+
+  private fun startSettingsSyncLoop() {
+    settingsSyncJob?.cancel()
+    settingsSyncJob =
+      scope.launch {
+        repository.settingsFlow.collect { s ->
+          val changed =
+            selectedHz != s.targetRefreshRate.hz ||
+              selectedBackend != s.graphicsBackend ||
+              abs(selectedAnimScale - s.animationScale) >= 0.02f
+          if (changed) {
+            selectedHz = s.targetRefreshRate.hz
+            selectedBackend = s.graphicsBackend
+            selectedAnimScale = s.animationScale
+            updateAllChipVisuals()
+            refreshTelemetryLine()
+          }
+        }
+      }
   }
 
   private fun startLiveTelemetryLoop() {
@@ -384,14 +672,129 @@ class FloatingHzOverlayService : Service() {
   }
 
   private fun refreshTelemetryLine() {
-    val t = telemetryManager.readTelemetry(selectedHz, 1000f / selectedHz.toFloat())
+    val t = telemetryManager.readTelemetry(selectedHz, 1000f / selectedHz.coerceAtLeast(1).toFloat())
+    miniPillText?.text = "GT • ${t.currentDisplayHz}Hz"
+
+    val now = System.currentTimeMillis()
+    val toast = actionToastText
+    if (toast != null && now < actionToastExpiresAt) {
+      statsTextView?.text = toast
+      return
+    }
+    actionToastText = null
+
+    val shortRender =
+      when (selectedBackend) {
+        GraphicsBackend.VULKAN_MAX -> "Vulkan"
+        GraphicsBackend.SKIAGL_MAX -> "SkiaGL"
+        GraphicsBackend.ANGLE_MAX -> "ANGLE"
+      }
+    val animTxt =
+      when {
+        selectedAnimScale <= 0.05f -> "0,0"
+        abs(selectedAnimScale - 0.25f) < 0.05f -> "0,25"
+        abs(selectedAnimScale - 0.5f) < 0.05f -> "0,5"
+        else -> String.format(Locale.US, "%.2f", selectedAnimScale)
+      }
     statsTextView?.text =
-      "${selectedHz}Hz (Tela ${t.currentDisplayHz}Hz) • ${String.format("%.1f", t.batteryTempC)}°C • ${t.ramAvailMb}MB"
+      "Tela:${t.currentDisplayHz}Hz • ${String.format(Locale.US, "%.1f", t.batteryTempC)}°C • $shortRender • ${animTxt}x"
+  }
+
+  private fun attachDragAndTapListener(target: View, onTap: (() -> Unit)?) {
+    val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+    target.setOnTouchListener(
+      object : View.OnTouchListener {
+        private var initialX = 0
+        private var initialY = 0
+        private var touchX = 0f
+        private var touchY = 0f
+        private var moved = false
+
+        override fun onTouch(v: View?, event: MotionEvent): Boolean {
+          val lp = layoutParams ?: return false
+          when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+              initialX = lp.x
+              initialY = lp.y
+              touchX = event.rawX
+              touchY = event.rawY
+              moved = false
+              return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+              val dx = (event.rawX - touchX).toInt()
+              val dy = (event.rawY - touchY).toInt()
+              if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                moved = true
+              }
+              if (moved) {
+                lp.x = initialX + dx
+                lp.y = initialY + dy
+                overlayRoot?.let { root ->
+                  try {
+                    windowManager.updateViewLayout(root, lp)
+                  } catch (_: Exception) {}
+                }
+              }
+              return true
+            }
+            MotionEvent.ACTION_UP -> {
+              if (!moved && onTap != null) {
+                onTap.invoke()
+              }
+              return true
+            }
+          }
+          return false
+        }
+      }
+    )
+  }
+
+  private fun clampWindowPositionToScreen() {
+    val lp = layoutParams ?: return
+    val root = overlayRoot ?: return
+    val (screenW, screenH) =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val bounds = windowManager.currentWindowMetrics.bounds
+        bounds.width() to bounds.height()
+      } else {
+        val dm = resources.displayMetrics
+        dm.widthPixels to dm.heightPixels
+      }
+    val maxX = (screenW - dp(252)).coerceAtLeast(0)
+    val maxY = (screenH - dp(220)).coerceAtLeast(0)
+    lp.x = lp.x.coerceIn(0, maxX)
+    lp.y = lp.y.coerceIn(dp(20), maxY)
+    try {
+      windowManager.updateViewLayout(root, lp)
+    } catch (_: Exception) {}
+  }
+
+  private fun createPulseDot(): View {
+    return View(this).apply {
+      background =
+        GradientDrawable().apply {
+          shape = GradientDrawable.OVAL
+          setColor(Color.parseColor("#FF2A5F"))
+        }
+    }
+  }
+
+  private fun createPulseAnimator(dot: View): ObjectAnimator {
+    return ObjectAnimator.ofFloat(dot, View.ALPHA, 1f, 0.25f).apply {
+      duration = 650L
+      repeatCount = ValueAnimator.INFINITE
+      repeatMode = ValueAnimator.REVERSE
+      start()
+    }
   }
 
   private fun stopOverlayAndSelf() {
     telemetryJob?.cancel()
-    pulseAnimator?.cancel()
+    settingsSyncJob?.cancel()
+    miniPulseAnimator?.cancel()
+    headerPulseAnimator?.cancel()
     overlayRoot?.let {
       try {
         windowManager.removeView(it)
@@ -425,8 +828,8 @@ class FloatingHzOverlayService : Service() {
 
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(R.mipmap.ic_launcher)
-      .setContentTitle("Infinit Booster v3.0 • Painel Flutuante Hz")
-      .setContentText("Controle vermelho de 60/90/120Hz ativo sobre os jogos")
+      .setContentTitle("Infinit Game Turbo • Painel Flutuante")
+      .setContentText("Hz em tempo real, Renderização e Animação (0,0 / 0,25 / 0,5) ativos")
       .setOngoing(true)
       .setSilent(true)
       .setContentIntent(openPending)
@@ -439,10 +842,10 @@ class FloatingHzOverlayService : Service() {
       val channel =
         NotificationChannel(
           CHANNEL_ID,
-          "Painel Flutuante Vermelho de Hz",
+          "Painel Game Turbo (Hz, Render e Animação)",
           NotificationManager.IMPORTANCE_LOW,
         ).apply {
-          description = "Exibe o seletor flutuante em tempo real de 60/90/120Hz sobre os jogos"
+          description = "Painel compacto estilo Game Turbo sobre os jogos"
           setShowBadge(false)
         }
       val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -459,7 +862,9 @@ class FloatingHzOverlayService : Service() {
 
   override fun onDestroy() {
     telemetryJob?.cancel()
-    pulseAnimator?.cancel()
+    settingsSyncJob?.cancel()
+    miniPulseAnimator?.cancel()
+    headerPulseAnimator?.cancel()
     overlayRoot?.let {
       try {
         windowManager.removeView(it)

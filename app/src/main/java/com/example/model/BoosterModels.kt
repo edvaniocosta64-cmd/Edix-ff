@@ -40,6 +40,65 @@ enum class RefreshRateOption(val hz: Int, val label: String, val frameBudgetMs: 
   HZ_120(120, "120 Hz", 8.33f),
 }
 
+enum class AnimationScaleOption(val scale: Float, val label: String, val subtitle: String) {
+  OFF(0.0f, "0.0x", "Sem Animação"),
+  ULTRA(0.25f, "0.25x", "Ultra Rápida"),
+  FAST(0.5f, "0.5x", "Fluida"),
+  BALANCED(0.75f, "0.75x", "Suave"),
+  DEFAULT(1.0f, "1.0x", "Padrão"),
+}
+
+enum class IphoneTouchPreset(
+  val id: String,
+  val label: String,
+  val subtitle: String,
+  val pointerSpeed: Int,
+  val longPressMs: Int,
+  val tapTimeoutMs: Int,
+) {
+  IOS_LINEAR(
+    id = "IOS_LINEAR",
+    label = "iOS Linear 120Hz",
+    subtitle = "Curva suave e precisa inspirada no toque do iPhone",
+    pointerSpeed = 5,
+    longPressMs = 200,
+    tapTimeoutMs = 75,
+  ),
+  ZERO_DELAY(
+    id = "ZERO_DELAY",
+    label = "Zero-Delay Pro",
+    subtitle = "Resposta imediata com atraso mínimo de toque",
+    pointerSpeed = 6,
+    longPressMs = 160,
+    tapTimeoutMs = 60,
+  ),
+  ULTRA_PUXADA(
+    id = "ULTRA_PUXADA",
+    label = "Sensibilidade Alta+",
+    subtitle = "Velocidade máxima de arraste para jogos competitivos",
+    pointerSpeed = 7,
+    longPressMs = 135,
+    tapTimeoutMs = 50,
+  ),
+}
+
+data class IphoneTouchConfig(
+  val enabled: Boolean = false,
+  val preset: IphoneTouchPreset = IphoneTouchPreset.IOS_LINEAR,
+  val pointerSpeed: Int = 5,
+  val longPressMs: Int = 180,
+  val zeroBackpressure: Boolean = true,
+  val smoothFlingScroll: Boolean = true,
+  val multiTouchGameBoost: Boolean = true,
+)
+
+data class PerGameConfig(
+  val packageName: String,
+  val customDpi: Int? = null,
+  val touchScriptEnabled: Boolean = false,
+  val touchSensitivity: Int = 7,
+)
+
 enum class CoolerSpeed(val id: String, val label: String, val rpmText: String, val speedFactor: Float) {
   ECO("ECO", "Eco Silencioso", "2.400 RPM", 1.0f),
   TURBO("TURBO", "Turbo Ativo", "4.800 RPM", 2.1f),
@@ -111,10 +170,13 @@ data class BoosterSettings(
   val ignoreThermalLimit: Boolean = false,
   val graphicsBackend: GraphicsBackend = GraphicsBackend.VULKAN_MAX,
   val targetRefreshRate: RefreshRateOption = RefreshRateOption.HZ_120,
+  val animationScale: Float = 0.25f,
   val coolerActive: Boolean = false,
   val coolerSpeed: CoolerSpeed = CoolerSpeed.TURBO,
   val voiceEnabled: Boolean = true,
   val addedGamePackages: Set<String> = emptySet(),
+  val perGameConfigs: Map<String, PerGameConfig> = emptyMap(),
+  val iphoneTouchConfig: IphoneTouchConfig = IphoneTouchConfig(),
   val enabledModuleIds: Set<String> = emptySet(),
   val resolutionScalePercent: Int = 100,
   val resolutionCustomWidth: Int = 0,
@@ -166,4 +228,14 @@ data class DeviceTelemetry(
   val maxDisplayHz: Int = 60,
   val supportedHzList: List<Int> = listOf(60),
   val screenSpec: NativeScreenSpec = NativeScreenSpec(),
+)
+
+data class GraphicsRendererStatus(
+  val hwuiRenderer: String = "Não verificado",
+  val renderEngineBackend: String = "Padrão",
+  val angleGlobalActive: Boolean = false,
+  val anglePackagesSummary: String = "Nenhum",
+  val verifiedViaShizuku: Boolean = false,
+  val activeBackendDetected: GraphicsBackend? = null,
+  val lastVerifiedLabel: String = "Toque em Verificar para checar o sistema",
 )

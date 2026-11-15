@@ -95,8 +95,10 @@ class FloatingResolutionOverlayService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
-      scope.launch { repository.setFloatingResolutionOverlayEnabled(false) }
-      stopOverlayAndSelf()
+      scope.launch {
+        repository.setFloatingResolutionOverlayEnabled(false)
+        stopOverlayAndSelf()
+      }
       return START_NOT_STICKY
     }
 
@@ -199,8 +201,10 @@ class FloatingResolutionOverlayService : Service() {
         typeface = Typeface.DEFAULT_BOLD
         setPadding(dp(8), dp(2), dp(2), dp(2))
         setOnClickListener {
-          scope.launch { repository.setFloatingResolutionOverlayEnabled(false) }
-          stopOverlayAndSelf()
+          scope.launch {
+            repository.setFloatingResolutionOverlayEnabled(false)
+            stopOverlayAndSelf()
+          }
         }
       }
     header.addView(closeBtn)
@@ -251,6 +255,19 @@ class FloatingResolutionOverlayService : Service() {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
       }
     lockAspectCheck = lockBox
+    hField.isEnabled = !lockBox.isChecked
+    lockBox.setOnCheckedChangeListener { _, isChecked ->
+      hField.isEnabled = !isChecked
+      if (isChecked) {
+        val w = wField.text?.toString()?.toIntOrNull()
+        if (w != null && w in 320..4320) {
+          isUpdatingFields = true
+          val computed = ResolutionHelper.computeFromWidth(screenSpec, w)
+          hField.setText(computed.heightPx.toString())
+          isUpdatingFields = false
+        }
+      }
+    }
 
     wField.addTextChangedListener(
       object : TextWatcher {
@@ -294,16 +311,22 @@ class FloatingResolutionOverlayService : Service() {
 
     val applyBtn =
       createActionChip("Aplicar", "#7B2CBF", "#FFFFFF") {
+        widthInput?.clearFocus()
+        heightInput?.clearFocus()
         setFocusableForKeyboard(false)
         applyTypedResolution()
       }
     val resetBtn =
       createActionChip("Nativa", "#2E0A14", "#FF8FA3") {
+        widthInput?.clearFocus()
+        heightInput?.clearFocus()
         setFocusableForKeyboard(false)
         restoreNativeResolution()
       }
     val gameBtn =
       createActionChip("Voltar Jogo", "#112233", "#00E5FF") {
+        widthInput?.clearFocus()
+        heightInput?.clearFocus()
         setFocusableForKeyboard(false)
         toggleMinimize()
       }
@@ -376,11 +399,24 @@ class FloatingResolutionOverlayService : Service() {
       gravity = Gravity.CENTER
       background = bg
       setPadding(dp(6), dp(6), dp(6), dp(6))
+      setOnTouchListener { v, event ->
+        if (event.action == MotionEvent.ACTION_UP) {
+          setFocusableForKeyboard(true)
+          v.requestFocus()
+          v.post {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
+          }
+        }
+        false
+      }
       setOnClickListener {
         setFocusableForKeyboard(true)
         requestFocus()
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        post {
+          val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+          imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        }
       }
       setOnFocusChangeListener { _, hasFocus ->
         if (hasFocus) {
@@ -470,7 +506,11 @@ class FloatingResolutionOverlayService : Service() {
 
   private fun toggleMinimize() {
     isMinimized = !isMinimized
-    if (isMinimized) setFocusableForKeyboard(false)
+    if (isMinimized) {
+      widthInput?.clearFocus()
+      heightInput?.clearFocus()
+      setFocusableForKeyboard(false)
+    }
     bodyContainer?.visibility = if (isMinimized) View.GONE else View.VISIBLE
     minimizeBtn?.text = if (isMinimized) "+" else "—"
   }
