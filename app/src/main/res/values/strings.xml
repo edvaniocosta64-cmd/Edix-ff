@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Infinit Booster</string>
+    <string name="version_badge">v3.0</string>
+    <string name="nav_booster">Booster</string>
+    <string name="nav_modules">Módulos</string>
+    <string name="nav_games">Jogos</string>
+    <string name="nav_cooler">Cooler</string>
+    <string name="nav_diagnostics">Diagnóstico</string>
+    <string name="domain_kanji">領域展開 • 無量空処</string>
+    <string name="domain_subtitle">Expansão de Domínio: Vazio Infinito</string>
+    <string name="skip_intro">Pular</string>
+    <string name="activate_boost">Ativar Vazio Roxo</string>
+    <string name="boost_active">Modo Infinito Ativo</string>
+</resources>

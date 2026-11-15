@@ -1,0 +1,6 @@
+{
+  "name": "Infinit Booster",
+  "description": "Otimizador de desempenho v3.0 por edix ff com estética Vazio Roxo, módulo VOID RAM, 12+ módulos Full Extreme via Shizuku, painel flutuante vermelho 60/90/120Hz em tempo real, painel de resolução proporcional em 2º plano, cooler e diagnóstico.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
