@@ -13,6 +13,7 @@ import com.example.model.BoosterSettings
 import com.example.model.GraphicsBackend
 import com.example.model.GraphicsRendererStatus
 import com.example.model.IphoneTouchConfig
+import com.example.resolution.ResolutionHelper
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -721,18 +722,30 @@ class ShizukuBridge(private val context: Context) {
     customDpi: Int?,
     touchScriptEnabled: Boolean,
     touchSensitivity: Int,
+    fallbackShortSidePx: Int = 1080,
   ): String? =
     withContext(Dispatchers.IO) {
       val service = ensureBound() ?: return@withContext null
       val parts = mutableListOf<String>()
+      var dpiSpeedBoost = 0
       if (customDpi != null && customDpi in 400..1440) {
-        val dpiOut = runSafe(service, "wm density $customDpi")
-        parts += "DPI $customDpi ($dpiOut)"
+        val activeShortSide = resolveActiveShortSidePx(service, fallbackShortSidePx)
+        val realDensityDpi = ResolutionHelper.computeDensityForSmallestWidth(activeShortSide, customDpi)
+        val dpiOut = runSafe(service, "wm density $realDensityDpi")
+        dpiSpeedBoost = ResolutionHelper.computeDpiPointerSpeedBoost(customDpi)
+        parts += "DPI $customDpi (${realDensityDpi} dpi • $dpiOut)"
       }
-      if (touchScriptEnabled) {
+      if (touchScriptEnabled || dpiSpeedBoost > 0) {
+        val targetSens =
+          if (touchScriptEnabled) maxOf(touchSensitivity, dpiSpeedBoost)
+          else dpiSpeedBoost
         val touchOut =
-          runSafe(service, ShizukuModulesCatalog.buildGameTouchScriptCommand(touchSensitivity))
-        parts += "Script Touch Nível $touchSensitivity ($touchOut)"
+          if (touchScriptEnabled) {
+            runSafe(service, ShizukuModulesCatalog.buildGameTouchScriptCommand(targetSens))
+          } else {
+            runSafe(service, "settings put system pointer_speed $targetSens")
+          }
+        parts += "Touch Nv.$targetSens ($touchOut)"
       }
       val summary =
         if (parts.isEmpty()) "Sessão de jogo pronta."
@@ -740,6 +753,24 @@ class ShizukuBridge(private val context: Context) {
       _status.update { it.copy(lastCommandSummary = summary) }
       summary
     }
+
+  private fun resolveActiveShortSidePx(service: IShizukuShellService, fallbackShortSidePx: Int): Int {
+    return try {
+      val raw = service.runShellCommand("wm size")
+      val overrideMatch = Regex("Override size:\\s*(\\d+)x(\\d+)").find(raw)
+      val physicalMatch = Regex("Physical size:\\s*(\\d+)x(\\d+)").find(raw)
+      val chosen = overrideMatch ?: physicalMatch
+      if (chosen != null) {
+        val w = chosen.groupValues[1].toIntOrNull() ?: fallbackShortSidePx
+        val h = chosen.groupValues[2].toIntOrNull() ?: fallbackShortSidePx
+        minOf(w, h).coerceAtLeast(320)
+      } else {
+        fallbackShortSidePx.coerceAtLeast(320)
+      }
+    } catch (_: Exception) {
+      fallbackShortSidePx.coerceAtLeast(320)
+    }
+  }
 
   suspend fun restoreGameSessionTweaks(
     restoreDpi: Boolean,
@@ -767,7 +798,7 @@ class ShizukuBridge(private val context: Context) {
       return@withContext try {
         val topRaw =
           service.runShellCommand(
-            "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity' | head -n 1"
+            "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -n 1"
           )
         Regex("([a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+)/").find(topRaw)?.groupValues?.getOrNull(1)
       } catch (_: Exception) {

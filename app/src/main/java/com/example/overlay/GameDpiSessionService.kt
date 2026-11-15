@@ -13,6 +13,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.data.DeviceTelemetryManager
 import com.example.shizuku.ShizukuBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,7 @@ class GameDpiSessionService : Service() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
   private lateinit var shizukuBridge: ShizukuBridge
+  private lateinit var telemetryManager: DeviceTelemetryManager
   private var watchJob: Job? = null
 
   private var activeDpiApplied = false
@@ -80,6 +82,7 @@ class GameDpiSessionService : Service() {
   override fun onCreate() {
     super.onCreate()
     shizukuBridge = ShizukuBridge(this)
+    telemetryManager = DeviceTelemetryManager(this)
     createNotificationChannel()
   }
 
@@ -132,11 +135,13 @@ class GameDpiSessionService : Service() {
     watchJob =
       scope.launch {
         activeDpiApplied = customDpi != null
-        activeTouchApplied = touchEnabled
+        activeTouchApplied = touchEnabled || (customDpi != null)
+        val fallbackShortSide = telemetryManager.readNativeScreenSpec().widthPx
         shizukuBridge.applyGameSessionTweaks(
           customDpi = customDpi,
           touchScriptEnabled = touchEnabled,
           touchSensitivity = touchSensitivity,
+          fallbackShortSidePx = fallbackShortSide,
         )
 
         var sawGameInForeground = false
@@ -231,6 +236,13 @@ class GameDpiSessionService : Service() {
       val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       nm.createNotificationChannel(channel)
     }
+  }
+
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    if (activeDpiApplied || activeTouchApplied) {
+      restoreAndStop(this)
+    }
+    super.onTaskRemoved(rootIntent)
   }
 
   override fun onDestroy() {

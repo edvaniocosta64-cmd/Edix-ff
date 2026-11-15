@@ -35,5 +35,23 @@ object ResolutionHelper {
     return (spec.densityDpi * factor).roundToInt().coerceIn(140, 640)
   }
 
+  fun computeDensityForSmallestWidth(shortSidePx: Int, targetSmallestWidthDp: Int): Int {
+    val safeSw = targetSmallestWidthDp.coerceIn(400, 1440)
+    val safeWidth = shortSidePx.coerceAtLeast(320)
+    return ((safeWidth * 160f) / safeSw.toFloat()).roundToInt().coerceIn(72, 640)
+  }
+
+  fun computeDpiPointerSpeedBoost(targetSmallestWidthDp: Int): Int {
+    val sw = targetSmallestWidthDp.coerceIn(400, 1440)
+    return when {
+      sw >= 1200 -> 7
+      sw >= 960 -> 6
+      sw >= 720 -> 5
+      sw >= 580 -> 3
+      sw >= 480 -> 2
+      else -> 1
+    }
+  }
+
   private fun evenPixel(value: Int): Int = if (value % 2 == 0) value else value + 1
 }

@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.InstalledAppItem
 import com.example.model.PerGameConfig
+import com.example.resolution.ResolutionHelper
 import com.example.ui.BoosterUiState
 import kotlin.math.roundToInt
 import com.example.ui.components.AppDrawableIcon
@@ -294,16 +295,30 @@ fun GamesLauncherScreen(
 
                 if (gameCfg.customDpi != null) {
                   val activeDpi = gameCfg.customDpi.coerceIn(400, 1440)
+                  val realDensityDpi =
+                    ResolutionHelper.computeDensityForSmallestWidth(
+                      shortSidePx = state.telemetry.screenSpec.widthPx,
+                      targetSmallestWidthDp = activeDpi,
+                    )
+                  val speedLevel = ResolutionHelper.computeDpiPointerSpeedBoost(activeDpi)
                   Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                   ) {
-                    Text(
-                      text = "DPI no Jogo: $activeDpi",
-                      style = MaterialTheme.typography.titleMedium,
-                      color = LimitlessCyan,
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = "DPI no Jogo: $activeDpi",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = LimitlessCyan,
+                      )
+                      Text(
+                        text =
+                          "Menor largura ${activeDpi}dp → ${realDensityDpi} dpi reais • Velocidade Nv.$speedLevel",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MutedLavender,
+                      )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                       Surface(
                         shape = RoundedCornerShape(8.dp),

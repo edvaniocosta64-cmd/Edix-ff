@@ -1213,9 +1213,12 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           statusBanner = "Vazio Roxo ${deviceMaxHz}Hz (${current.graphicsBackend.title}$suffix) • Abrindo $label...",
         )
       }
-      delay(450L)
+      delay(if (hasGameDpiOrTouch) 700L else 450L)
       val launched = telemetryManager.launchPackage(packageName)
       if (!launched) {
+        if (hasGameDpiOrTouch) {
+          GameDpiSessionService.restoreAndStop(getApplication())
+        }
         _uiState.update {
           it.copy(statusBanner = "Não foi possível abrir $label neste dispositivo.")
         }
