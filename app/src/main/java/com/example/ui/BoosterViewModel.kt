@@ -172,7 +172,10 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun onDomainIntroStart() {
-    voiceEngine.playDomainExpansion(_uiState.value.settings.voiceEnabled)
+    telemetryManager.pulseHaptic(heavy = false)
+  }
+
+  fun onDomainBurstTriggered() {
     telemetryManager.pulseHaptic(heavy = true)
   }
 
@@ -184,8 +187,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun replayDomainIntro() {
     musicEngine.pause()
     _uiState.update { it.copy(showDomainIntro = true) }
-    voiceEngine.playDomainExpansion(_uiState.value.settings.voiceEnabled)
-    telemetryManager.pulseHaptic(heavy = true)
+    telemetryManager.pulseHaptic(heavy = false)
   }
 
   fun toggleVoice(enabled: Boolean) {

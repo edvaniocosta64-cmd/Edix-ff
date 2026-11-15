@@ -16,6 +16,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -80,7 +81,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -174,39 +177,59 @@ fun BoosterDashboardScreen(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Column {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          modifier = Modifier.weight(1f),
+        ) {
+          Surface(
+            shape = CircleShape,
+            color = VoidObsidian,
+            border = BorderStroke(1.5.dp, HollowPurpleBright),
+            modifier = Modifier.size(52.dp).testTag("app_profile_avatar"),
           ) {
-            Text(
-              text = "INFINIT BOOSTER",
-              style = MaterialTheme.typography.headlineMedium,
-              color = ColdWhite,
+            Image(
+              painter = painterResource(id = R.drawable.img_launcher_core),
+              contentDescription = "Foto de perfil do Infinit Booster",
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize().clip(CircleShape),
             )
-            Surface(
-              shape = RoundedCornerShape(50),
-              color = HollowPurple.copy(alpha = 0.25f),
-              border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.65f)),
+          }
+
+          Column {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
               Text(
-                text = stringResource(R.string.version_badge),
-                style = MaterialTheme.typography.labelSmall,
-                color = HollowPurpleBright,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                text = "INFINIT BOOSTER",
+                style = MaterialTheme.typography.headlineMedium,
+                color = ColdWhite,
               )
+              Surface(
+                shape = RoundedCornerShape(50),
+                color = HollowPurple.copy(alpha = 0.25f),
+                border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.65f)),
+              ) {
+                Text(
+                  text = stringResource(R.string.version_badge),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = HollowPurpleBright,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+              }
             }
+            Text(
+              text = "Criador: edix ff",
+              style = MaterialTheme.typography.labelMedium,
+              color = ColdWhite,
+            )
+            Text(
+              text = "App em teste — não está na versão completa",
+              style = MaterialTheme.typography.labelSmall,
+              color = WarningAmber,
+            )
           }
-          Text(
-            text = "Criador: edix ff",
-            style = MaterialTheme.typography.labelMedium,
-            color = ColdWhite,
-          )
-          Text(
-            text = "App em teste — não está na versão completa",
-            style = MaterialTheme.typography.labelSmall,
-            color = WarningAmber,
-          )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

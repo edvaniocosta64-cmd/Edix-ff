@@ -364,6 +364,7 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
       DomainExpansionOverlay(
         voiceEnabled = state.settings.voiceEnabled,
         onStartIntro = { viewModel.onDomainIntroStart() },
+        onTriggerBurst = { viewModel.onDomainBurstTriggered() },
         onDismiss = { viewModel.dismissDomainIntro() },
       )
     }
