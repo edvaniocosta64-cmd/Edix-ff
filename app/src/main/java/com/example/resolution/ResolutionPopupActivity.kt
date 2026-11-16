@@ -23,13 +23,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
@@ -299,47 +297,22 @@ private fun ResolutionQuickPopupContent(
 
         Text(text = feedback, style = MaterialTheme.typography.labelMedium, color = MutedLavender)
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Button(
+          onClick = {
+            val w = widthInput.toIntOrNull()?.coerceIn(360, 4320) ?: screenSpec.widthPx
+            val h = heightInput.toIntOrNull()?.coerceIn(480, 7680) ?: screenSpec.heightPx
+            val dpi = ResolutionHelper.computeProportionalDpi(screenSpec, w)
+            scope.launch {
+              val msg = shizukuBridge.applyCustomResolution(w, h, dpi)
+              repository.setResolutionConfig(scalePercent.roundToInt(), w, h, lockRatio)
+              feedback = msg ?: "Autorize o Shizuku no app para aplicar ${w}x${h}."
+            }
+          },
+          modifier = Modifier.fillMaxWidth().height(48.dp),
+          shape = RoundedCornerShape(12.dp),
+          colors = ButtonDefaults.buttonColors(containerColor = HollowPurple),
         ) {
-          OutlinedButton(
-            onClick = {
-              scope.launch {
-                val msg = shizukuBridge.restoreNativeResolution()
-                repository.setResolutionConfig(100, screenSpec.widthPx, screenSpec.heightPx, true)
-                widthInput = screenSpec.widthPx.toString()
-                heightInput = screenSpec.heightPx.toString()
-                scalePercent = 100f
-                feedback = msg ?: "Conecte e autorize o Shizuku primeiro."
-              }
-            },
-            modifier = Modifier.weight(1f).height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, VoidBorder),
-          ) {
-            Icon(imageVector = Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.size(4.dp))
-            Text("Nativa", color = ColdWhite)
-          }
-
-          Button(
-            onClick = {
-              val w = widthInput.toIntOrNull()?.coerceIn(360, 4320) ?: screenSpec.widthPx
-              val h = heightInput.toIntOrNull()?.coerceIn(480, 7680) ?: screenSpec.heightPx
-              val dpi = ResolutionHelper.computeProportionalDpi(screenSpec, w)
-              scope.launch {
-                val msg = shizukuBridge.applyCustomResolution(w, h, dpi)
-                repository.setResolutionConfig(scalePercent.roundToInt(), w, h, lockRatio)
-                feedback = msg ?: "Autorize o Shizuku no app para aplicar ${w}x${h}."
-              }
-            },
-            modifier = Modifier.weight(1.3f).height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = HollowPurple),
-          ) {
-            Text("Aplicar Agora", color = ColdWhite)
-          }
+          Text("Aplicar Agora", color = ColdWhite)
         }
       }
     }

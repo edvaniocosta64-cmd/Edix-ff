@@ -15,8 +15,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.BackgroundMusicEngine
 import com.example.audio.DomainVoiceEngine
+import com.example.ax.AxExtensionManager
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
+import com.example.guardian.InfinitGuardianEngine
+import com.example.model.AxExtensionModule
 import com.example.model.BoosterSettings
 import com.example.model.BottleneckFinding
 import com.example.model.CoolerSpeed
@@ -24,8 +27,8 @@ import com.example.model.DeviceTelemetry
 import com.example.model.DiagnosticAction
 import com.example.model.GraphicsBackend
 import com.example.model.GraphicsRendererStatus
+import com.example.model.GuardianState
 import com.example.model.InstalledAppItem
-import com.example.model.IphoneTouchConfig
 import com.example.model.PerGameConfig
 import com.example.model.RefreshRateOption
 import com.example.model.WallpaperTheme
@@ -36,8 +39,8 @@ import com.example.overlay.GameDpiSessionService
 import com.example.resolution.ResolutionPanelService
 import com.example.shizuku.ShizukuBridge
 import com.example.shizuku.ShizukuConnectionState
-import com.example.shizuku.ShizukuModulesCatalog
 import com.example.shizuku.ShizukuStatus
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,6 +50,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class BoosterUiState(
@@ -65,9 +70,11 @@ data class BoosterUiState(
   val shizukuStatus: ShizukuStatus = ShizukuStatus(),
   val graphicsStatus: GraphicsRendererStatus = GraphicsRendererStatus(),
   val shizukuLogs: List<String> = emptyList(),
-  val moduleLogs: Map<String, String> = emptyMap(),
+  val axExtensions: List<AxExtensionModule> = emptyList(),
+  val isImportingAxPlugin: Boolean = false,
   val canWriteSystemSettings: Boolean = false,
   val canDrawOverlays: Boolean = false,
+  val guardianState: GuardianState = GuardianState(),
 )
 
 class BoosterViewModel(application: Application) : AndroidViewModel(application) {
@@ -77,7 +84,11 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   private val voiceEngine = DomainVoiceEngine(application)
   private val musicEngine = BackgroundMusicEngine(application)
   private val shizukuBridge = ShizukuBridge(application)
+  private val guardianEngine = InfinitGuardianEngine(application)
+  private val axExtensionManager = AxExtensionManager(application)
+  private val guardianMutex = Mutex()
 
+  private val _installedApps = MutableStateFlow<List<InstalledAppItem>>(emptyList())
   private val _uiState = MutableStateFlow(BoosterUiState())
   val uiState: StateFlow<BoosterUiState> = _uiState.asStateFlow()
 
@@ -88,16 +99,22 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   init {
     refreshSpecialPermissions()
     viewModelScope.launch {
+      val (loadedPlugins, _) =
+        withContext(Dispatchers.IO) { axExtensionManager.verifyIntegrityAndCleanup() }
+      _uiState.update { it.copy(axExtensions = loadedPlugins) }
+    }
+    viewModelScope.launch {
       val apps = withContext(Dispatchers.IO) { telemetryManager.queryLaunchableApps() }
+      _installedApps.value = apps
       _uiState.update { it.copy(installedApps = apps) }
     }
 
     viewModelScope.launch {
-      combine(repository.settingsFlow, _uiState) { settings, current ->
-          val added = current.installedApps.filter { it.packageName in settings.addedGamePackages }
-          settings to added
+      combine(repository.settingsFlow, _installedApps) { settings, apps ->
+          val added = apps.filter { it.packageName in settings.addedGamePackages }
+          Triple(settings, apps, added)
         }
-        .collect { (settings, added) ->
+        .collect { (settings, apps, added) ->
           if (!hasSyncedInitialMusic) {
             hasSyncedInitialMusic = true
             if (!_uiState.value.showDomainIntro && settings.bgMusicEnabled && musicEngine.hasMusic()) {
@@ -111,7 +128,13 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
                 fpsUnlocked = settings.fpsUnlocked,
                 ignoreThermalLimit = settings.ignoreThermalLimit,
               )
-            state.copy(settings = settings, addedGames = added, findings = updatedFindings)
+            state.copy(
+              settings = settings,
+              installedApps = apps,
+              addedGames = added,
+              findings = updatedFindings,
+              guardianState = state.guardianState.copy(autoRepairEnabled = settings.guardianAutoRepairEnabled),
+            )
           }
         }
     }
@@ -163,6 +186,85 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           ignoreThermalLimit = state.settings.ignoreThermalLimit,
         )
       state.copy(telemetry = telemetry, findings = findings)
+    }
+    runGuardianCycle(forceManual = false)
+  }
+
+  private suspend fun runGuardianCycle(forceManual: Boolean) {
+    guardianMutex.withLock {
+      val snapshot = _uiState.value
+      val installedSet = _installedApps.value.map { it.packageName }.toSet()
+      val result =
+        guardianEngine.auditAndHeal(
+          telemetry = snapshot.telemetry,
+          settings = snapshot.settings,
+          shizukuStatus = snapshot.shizukuStatus,
+          canDrawOverlays = Settings.canDrawOverlays(getApplication()),
+          installedPackageSet = installedSet,
+          forceManualHeal = forceManual,
+          repository = repository,
+          telemetryManager = telemetryManager,
+          shizukuBridge = shizukuBridge,
+        )
+      _uiState.update { state ->
+        state.copy(
+          guardianState = result.state,
+          statusBanner =
+            when {
+              forceManual -> result.state.statusSummary
+              result.userNotice != null && state.statusBanner == null -> result.userNotice
+              else -> state.statusBanner
+            },
+        )
+      }
+    }
+  }
+
+  fun toggleGuardianAutoRepair(enabled: Boolean) {
+    viewModelScope.launch {
+      repository.setGuardianAutoRepairEnabled(enabled)
+      telemetryManager.pulseHaptic(false)
+      _uiState.update {
+        it.copy(
+          guardianState = it.guardianState.copy(autoRepairEnabled = enabled),
+          statusBanner =
+            if (enabled) "IA Guardião ativada: corrigindo bugs e travamentos em segundo plano (sem API)."
+            else "Auto-reparo da IA pausado (somente avisos ativos).",
+        )
+      }
+      if (enabled) {
+        runGuardianCycle(forceManual = true)
+      }
+    }
+  }
+
+  fun runGuardianManualHeal() {
+    viewModelScope.launch {
+      _uiState.update {
+        it.copy(guardianState = it.guardianState.copy(isAnalyzing = true))
+      }
+      refreshSpecialPermissions()
+      val telemetry =
+        withContext(Dispatchers.IO) {
+          telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
+        }
+      _uiState.update { state ->
+        val findings =
+          telemetryManager.analyzeBottlenecks(
+            telemetry = telemetry,
+            fpsUnlocked = state.settings.fpsUnlocked,
+            ignoreThermalLimit = state.settings.ignoreThermalLimit,
+          )
+        state.copy(telemetry = telemetry, findings = findings)
+      }
+      telemetryManager.pulseHaptic(true)
+      runGuardianCycle(forceManual = true)
+    }
+  }
+
+  fun dismissGuardianAlert(alertId: String) {
+    _uiState.update { state ->
+      state.copy(guardianState = guardianEngine.dismissAlert(alertId, state.guardianState))
     }
   }
 
@@ -522,36 +624,127 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
-  fun toggleModule(moduleId: String, enabled: Boolean) {
+  fun toggleAxOnlyMode(enabled: Boolean) {
     viewModelScope.launch {
-      repository.setModuleEnabled(moduleId, enabled)
+      repository.setAxOnlyModeEnabled(enabled)
       telemetryManager.pulseHaptic(false)
-      val currentSettings = _uiState.value.settings
-      if (enabled) {
-        val msg = shizukuBridge.applySingleModule(moduleId, currentSettings)
-        val logText = msg ?: "Módulo ativo no perfil. Autorize o Shizuku para executar no sistema."
-        _uiState.update {
-          it.copy(
-            moduleLogs = it.moduleLogs + (moduleId to logText),
-            statusBanner = logText,
+      _uiState.update {
+        it.copy(
+          statusBanner =
+            if (enabled)
+              "Modo Só AxManager ativado: importando e filtrando apenas plugins AxManager."
+            else
+              "Modo Aberto ativado: aceita módulos ZIP do Magisk e plugins AxManager.",
+        )
+      }
+    }
+  }
+
+  fun importAxPluginZip(uri: Uri) {
+    viewModelScope.launch {
+      _uiState.update { it.copy(isImportingAxPlugin = true) }
+      val shizukuStatus = _uiState.value.shizukuStatus
+      val shizukuConnected = shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      val isRootUid = shizukuStatus.privilegedUid == 0
+      val onlyAx = _uiState.value.settings.axOnlyModeEnabled
+
+      val outcome =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.importZipPlugin(
+            uri = uri,
+            shizukuConnected = shizukuConnected,
+            isRootUid = isRootUid,
+            onlyAxManagerAllowed = onlyAx,
           )
         }
-      } else {
-        val msg = shizukuBridge.disableSingleModule(moduleId, currentSettings)
-        val logText = msg ?: "Módulo desativado no perfil."
+      telemetryManager.pulseHaptic(outcome.success)
+      _uiState.update {
+        it.copy(
+          axExtensions = outcome.allModules,
+          isImportingAxPlugin = false,
+          statusBanner = outcome.message,
+        )
+      }
+    }
+  }
+
+  fun toggleAxPlugin(pluginId: String, enable: Boolean) {
+    viewModelScope.launch {
+      val plugin = _uiState.value.axExtensions.firstOrNull { it.id == pluginId } ?: return@launch
+      if (enable && !plugin.isSupportedForActivation) {
+        telemetryManager.pulseHaptic(false)
+        _uiState.update {
+          it.copy(statusBanner = "Não suportado: ${plugin.compatibilityReason}")
+        }
+        return@launch
+      }
+
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      val cmdsForAction = if (enable) plugin.applyCommands else plugin.disableCommands
+
+      if (enable && plugin.requiresShizuku && !shizukuConnected && cmdsForAction.isNotEmpty()) {
+        telemetryManager.pulseHaptic(false)
         _uiState.update {
           it.copy(
-            moduleLogs = it.moduleLogs + (moduleId to logText),
-            statusBanner = logText,
+            statusBanner =
+              "Conecte e autorize o Shizuku para ativar '${plugin.name}' no sistema.",
           )
         }
+        return@launch
       }
-      if (moduleId == "mod_14_iphone_touch") {
-        repository.setIphoneTouchConfig(currentSettings.iphoneTouchConfig.copy(enabled = enabled))
+
+      val (ok, executionLog) =
+        if (shizukuConnected && cmdsForAction.isNotEmpty()) {
+          shizukuBridge.executeAxExtensionModule(plugin, enable)
+        } else {
+          true to
+            if (enable) "Plugin '${plugin.name}' ativado no AX Extension Center."
+            else "Plugin '${plugin.name}' desativado."
+        }
+
+      if (!ok) {
+        telemetryManager.pulseHaptic(false)
+        _uiState.update { it.copy(statusBanner = executionLog) }
+        return@launch
       }
-      if (moduleId == "mod_04_vulkan_hwui" || moduleId == "mod_05_angle_driver") {
-        val verified = shizukuBridge.verifyGraphicsBackendStatus(currentSettings.addedGamePackages)
-        _uiState.update { it.copy(graphicsStatus = verified) }
+
+      val updated =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.updatePluginStatus(
+            pluginId = pluginId,
+            enabled = enable,
+            lastLog = executionLog,
+          )
+        }
+      telemetryManager.pulseHaptic(enable)
+      _uiState.update {
+        it.copy(
+          axExtensions = updated,
+          statusBanner = executionLog,
+        )
+      }
+    }
+  }
+
+  fun removeAxPlugin(pluginId: String) {
+    viewModelScope.launch {
+      val plugin = _uiState.value.axExtensions.firstOrNull { it.id == pluginId } ?: return@launch
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      if (plugin.enabled && shizukuConnected && plugin.disableCommands.isNotEmpty()) {
+        shizukuBridge.executeAxExtensionModule(plugin, enable = false)
+      }
+      val updated =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.removePlugin(pluginId)
+        }
+      telemetryManager.pulseHaptic(false)
+      _uiState.update {
+        it.copy(
+          axExtensions = updated,
+          statusBanner = "Plugin '${plugin.name}' removido do AX Extension Center.",
+        )
       }
     }
   }
@@ -559,39 +752,59 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun restoreAllFactoryDefaults(activity: Activity?) {
     viewModelScope.launch {
       val app = getApplication<Application>()
-      val addedGames = _uiState.value.settings.addedGamePackages
-      repository.restoreFactoryDefaultsState()
+      val gamesToReset = _uiState.value.settings.addedGamePackages
+      val activeAxPlugins = _uiState.value.axExtensions.filter { it.enabled }
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+
       FloatingHzOverlayService.stop(app)
       FloatingResolutionOverlayService.stop(app)
       FloatingFpsMeterService.stop(app)
       ResolutionPanelService.stop(app)
       GameDpiSessionService.restoreAndStop(app)
-      val defaultSettings =
-        _uiState.value.settings.copy(
-          boostActive = false,
-          fpsUnlocked = false,
-          performanceMax = false,
-          ignoreThermalLimit = false,
-          coolerActive = false,
-          graphicsBackend = GraphicsBackend.VULKAN_MAX,
-          enabledModuleIds = emptySet(),
-          targetRefreshRate = RefreshRateOption.HZ_60,
-          floatingHzOverlayEnabled = false,
-          floatingResolutionOverlayEnabled = false,
-          floatingFpsMeterEnabled = false,
-          backgroundResolutionPanelEnabled = false,
-        )
-      applyWindowPerformance(activity, defaultSettings)
-      val report = shizukuBridge.restoreAllDefaults(addedGames)
-      val verified = shizukuBridge.verifyGraphicsBackendStatus(addedGames)
-      telemetryManager.pulseHaptic(false)
-      _uiState.update {
-        it.copy(
+
+      if (shizukuConnected) {
+        activeAxPlugins.forEach { plugin ->
+          if (plugin.disableCommands.isNotEmpty()) {
+            shizukuBridge.executeAxExtensionModule(plugin, enable = false)
+          }
+        }
+      }
+
+      withContext(Dispatchers.IO) {
+        axExtensionManager.clearAllPlugins()
+        musicEngine.clearMusic()
+        voiceEngine.clearCustomAudio()
+        runCatching {
+          val customBg = File(app.filesDir, "custom_wallpaper.jpg")
+          if (customBg.exists()) customBg.delete()
+        }
+        telemetryManager.cleanupOrphanTempFilesAndHeavyCache()
+      }
+
+      repository.restoreFactoryDefaultsState()
+      telemetryManager.resetDisplayRefreshRateToDefault(activity)
+
+      val report = shizukuBridge.restoreAllDefaults(gamesToReset)
+      val verified = shizukuBridge.verifyGraphicsBackendStatus(emptySet())
+      telemetryManager.pulseHaptic(true)
+      _uiState.update { state ->
+        val updatedGuardian =
+          guardianEngine.recordExternalFix(
+            id = "full_factory_restore",
+            title = "Restauração Total Concluída",
+            detail =
+              "Tudo que foi alterado (plugins AX, DPI/Touch, painéis flutuantes, Hz, animação, renderização, Root e mídias) voltou ao padrão.",
+            currentState = state.guardianState,
+          )
+        state.copy(
           shizukuLogs = report?.details ?: emptyList(),
-          moduleLogs = emptyMap(),
+          axExtensions = emptyList(),
           graphicsStatus = verified,
+          guardianState = updatedGuardian,
           statusBanner =
-            report?.summary ?: "Todas as opções, overlays e renderização foram restaurados para o padrão!",
+            report?.summary
+              ?: "Tudo foi restaurado ao padrão original (DPI, Hz, plugins AX, renderização, painéis e mídias)!",
         )
       }
       refreshTelemetryInternal()
@@ -614,18 +827,6 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           statusBanner =
             msg ?: "Resolução ${widthPx}x${heightPx} salva! Autorize o Shizuku para aplicar no sistema.",
         )
-      }
-    }
-  }
-
-  fun restoreNativeResolution() {
-    viewModelScope.launch {
-      val spec = telemetryManager.readNativeScreenSpec()
-      repository.setResolutionConfig(100, spec.widthPx, spec.heightPx, true)
-      val msg = shizukuBridge.restoreNativeResolution()
-      telemetryManager.pulseHaptic(false)
-      _uiState.update {
-        it.copy(statusBanner = msg ?: "Resolução padrão (${spec.widthPx}x${spec.heightPx}) selecionada.")
       }
     }
   }
@@ -921,64 +1122,11 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
-  fun updateIphoneTouchConfig(config: IphoneTouchConfig) {
-    viewModelScope.launch {
-      val prevEnabled = _uiState.value.settings.iphoneTouchConfig.enabled
-      repository.setIphoneTouchConfig(config)
-      if (config.enabled != prevEnabled) {
-        repository.setModuleEnabled("mod_14_iphone_touch", config.enabled)
-      }
-      telemetryManager.pulseHaptic(false)
-      if (config.enabled != prevEnabled) {
-        val report = shizukuBridge.applyIphoneTouchModule(config, _uiState.value.settings.addedGamePackages)
-        if (report != null) {
-          _uiState.update {
-            it.copy(
-              shizukuLogs = report.details,
-              moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to report.summary),
-              statusBanner = report.summary,
-            )
-          }
-        }
-      }
-    }
-  }
-
-  fun applyIphoneTouchModuleNow() {
-    viewModelScope.launch {
-      val enabledCfg = _uiState.value.settings.iphoneTouchConfig.copy(enabled = true)
-      repository.setIphoneTouchConfig(enabledCfg)
-      repository.setModuleEnabled("mod_14_iphone_touch", true)
-      val report = shizukuBridge.applyIphoneTouchModule(enabledCfg, _uiState.value.settings.addedGamePackages)
-      telemetryManager.pulseHaptic(true)
-      _uiState.update {
-        it.copy(
-          shizukuLogs = report?.details ?: it.shizukuLogs,
-          moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to (report?.summary ?: "Salvo • Autorize Shizuku para aplicar")),
-          statusBanner =
-            report?.summary ?: "Módulo iPhone Touch salvo! Conecte o Shizuku para aplicar no sistema.",
-        )
-      }
-    }
-  }
-
-  fun restoreIphoneTouchDefaults() {
-    viewModelScope.launch {
-      val resetCfg = _uiState.value.settings.iphoneTouchConfig.copy(enabled = false)
-      repository.setIphoneTouchConfig(resetCfg)
-      repository.setModuleEnabled("mod_14_iphone_touch", false)
-      val msg = shizukuBridge.restoreTouchDefaults()
-      telemetryManager.pulseHaptic(false)
-      _uiState.update {
-        it.copy(
-          moduleLogs = it.moduleLogs + ("mod_14_iphone_touch" to (msg ?: "Toque restaurado ao padrão")),
-          statusBanner = msg ?: "Toque restaurado para o padrão no perfil.",
-        )
-      }
-    }
-  }
-
   fun applyWindowPerformance(activity: Activity?, settings: BoosterSettings = _uiState.value.settings) {
+    if (!settings.boostActive && !settings.fpsUnlocked) {
+      telemetryManager.resetDisplayRefreshRateToDefault(activity)
+      return
+    }
     val targetHz =
       when {
         settings.boostActive ->
@@ -1129,7 +1277,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun refreshInstalledApps() {
     viewModelScope.launch {
       val apps = withContext(Dispatchers.IO) { telemetryManager.queryLaunchableApps() }
-      _uiState.update { it.copy(installedApps = apps) }
+      _installedApps.value = apps
     }
   }
 

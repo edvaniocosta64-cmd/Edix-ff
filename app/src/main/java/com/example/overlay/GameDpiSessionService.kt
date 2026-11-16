@@ -38,6 +38,8 @@ class GameDpiSessionService : Service() {
     const val EXTRA_TOUCH_ENABLED = "extra_game_touch_enabled"
     const val EXTRA_TOUCH_SENS = "extra_game_touch_sens"
 
+    @Volatile var isRunning: Boolean = false
+
     fun start(
       context: Context,
       packageName: String,
@@ -63,11 +65,15 @@ class GameDpiSessionService : Service() {
     }
 
     fun restoreAndStop(context: Context) {
+      if (!isRunning) return
       val intent =
         Intent(context, GameDpiSessionService::class.java).apply {
           action = ACTION_RESTORE_AND_STOP
         }
-      context.startService(intent)
+      val sent = runCatching { context.startService(intent) }.isSuccess
+      if (!sent) {
+        runCatching { context.stopService(Intent(context, GameDpiSessionService::class.java)) }
+      }
     }
   }
 
@@ -130,6 +136,7 @@ class GameDpiSessionService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    isRunning = true
 
     watchJob?.cancel()
     watchJob =
@@ -240,12 +247,27 @@ class GameDpiSessionService : Service() {
 
   override fun onTaskRemoved(rootIntent: Intent?) {
     if (activeDpiApplied || activeTouchApplied) {
-      restoreAndStop(this)
+      watchJob?.cancel()
+      val restoreDpi = activeDpiApplied
+      val restoreTouch = activeTouchApplied
+      activeDpiApplied = false
+      activeTouchApplied = false
+      scope.launch {
+        runCatching {
+          shizukuBridge.restoreGameSessionTweaks(
+            restoreDpi = restoreDpi,
+            restoreTouch = restoreTouch,
+          )
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+      }
     }
     super.onTaskRemoved(rootIntent)
   }
 
   override fun onDestroy() {
+    isRunning = false
     watchJob?.cancel()
     shizukuBridge.release()
     scope.cancel()

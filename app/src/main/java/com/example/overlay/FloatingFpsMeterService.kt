@@ -47,6 +47,8 @@ class FloatingFpsMeterService : Service() {
     const val ACTION_START = "com.example.action.FLOAT_FPS_START"
     const val ACTION_STOP = "com.example.action.FLOAT_FPS_STOP"
 
+    @Volatile var isRunning: Boolean = false
+
     fun start(context: Context) {
       val intent = Intent(context, FloatingFpsMeterService::class.java).apply { action = ACTION_START }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -57,8 +59,12 @@ class FloatingFpsMeterService : Service() {
     }
 
     fun stop(context: Context) {
+      if (!isRunning) return
       val intent = Intent(context, FloatingFpsMeterService::class.java).apply { action = ACTION_STOP }
-      context.startService(intent)
+      val sent = runCatching { context.startService(intent) }.isSuccess
+      if (!sent) {
+        runCatching { context.stopService(Intent(context, FloatingFpsMeterService::class.java)) }
+      }
     }
   }
 
@@ -136,6 +142,7 @@ class FloatingFpsMeterService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    isRunning = true
 
     if (overlayRoot == null) {
       attachFpsMeterHud()
@@ -356,6 +363,7 @@ class FloatingFpsMeterService : Service() {
     ).toInt()
 
   override fun onDestroy() {
+    isRunning = false
     runningCallback = false
     Choreographer.getInstance().removeFrameCallback(frameCallback)
     meterJob?.cancel()

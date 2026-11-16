@@ -16,8 +16,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Storage
@@ -60,6 +62,7 @@ import com.example.ui.theme.WarningAmber
 fun DiagnosticsScreen(
   state: BoosterUiState,
   onRunScan: () -> Unit,
+  onRunGuardianHeal: () -> Unit,
   onDiagnosticAction: (DiagnosticAction) -> Unit,
 ) {
   val telemetry = state.telemetry
@@ -103,6 +106,53 @@ fun DiagnosticsScreen(
             style = MaterialTheme.typography.labelLarge,
             color = ColdWhite,
           )
+        }
+      }
+    }
+
+    // IA Guardião Quick Heal Card in Diagnostics
+    item {
+      val g = state.guardianState
+      val gColor = if (g.healthScore >= 85) NeonSuccess else WarningAmber
+      VoidGlassCard(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
+        borderColor = gColor.copy(alpha = 0.55f),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(imageVector = Icons.Rounded.HealthAndSafety, contentDescription = null, tint = gColor)
+            Column {
+              Text("IA Guardião (Sem API • Sem Voz)", style = MaterialTheme.typography.titleMedium, color = ColdWhite)
+              Text(g.statusSummary, style = MaterialTheme.typography.bodySmall, color = MutedLavender)
+            }
+          }
+          Surface(shape = RoundedCornerShape(8.dp), color = gColor.copy(alpha = 0.16f)) {
+            Text(
+              text = "${g.healthScore}%",
+              style = MaterialTheme.typography.labelLarge,
+              color = gColor,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+          }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        OutlinedButton(
+          onClick = onRunGuardianHeal,
+          border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.7f)),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth().minimumInteractiveComponentSize().testTag("diagnostics_guardian_heal_button"),
+        ) {
+          Icon(imageVector = Icons.Rounded.AutoFixHigh, contentDescription = null, tint = LimitlessCyan, modifier = Modifier.size(18.dp))
+          Spacer(modifier = Modifier.size(6.dp))
+          Text("Executar Correção da IA Guardião (${g.totalRepairsCount} feitas)", color = ColdWhite)
         }
       }
     }

@@ -9,10 +9,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import com.example.BuildConfig
+import com.example.model.AxExtensionModule
 import com.example.model.BoosterSettings
 import com.example.model.GraphicsBackend
 import com.example.model.GraphicsRendererStatus
-import com.example.model.IphoneTouchConfig
 import com.example.resolution.ResolutionHelper
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -485,14 +485,6 @@ class ShizukuBridge(private val context: Context) {
         logs += "GameMode (${packagesToTune.size})"
       }
 
-      settings.enabledModuleIds.forEach { moduleId ->
-        val cmd = ShizukuModulesCatalog.buildApplyCommand(moduleId, settings)
-        runSafe(service, cmd)
-      }
-      if (settings.enabledModuleIds.isNotEmpty()) {
-        logs += "${settings.enabledModuleIds.size} módulos aplicados"
-      }
-
       val trimRes = runSafe(service, "pm trim-caches 2147483648; am kill-all")
       logs += "Trim/Kill: $trimRes"
 
@@ -501,26 +493,38 @@ class ShizukuBridge(private val context: Context) {
       ShizukuBoostReport(executedCount = logs.size, summary = summary, details = logs)
     }
 
-  suspend fun applySingleModule(moduleId: String, settings: BoosterSettings): String? =
+  suspend fun executeAxExtensionModule(
+    module: AxExtensionModule,
+    enable: Boolean,
+  ): Pair<Boolean, String> =
     withContext(Dispatchers.IO) {
-      val service = ensureBound() ?: return@withContext null
-      val module = ShizukuModulesCatalog.modules.firstOrNull { it.id == moduleId } ?: return@withContext null
-      val cmd = ShizukuModulesCatalog.buildApplyCommand(moduleId, settings)
-      val out = runSafe(service, cmd)
-      val msg = "[ATIVADO] #${module.index} ${module.title} → $out"
-      _status.update { it.copy(lastCommandSummary = msg) }
-      msg
-    }
+      val service = ensureBound()
+        ?: return@withContext (false to "Shizuku não conectado. Conecte o Shizuku para aplicar '${module.name}'.")
 
-  suspend fun disableSingleModule(moduleId: String, settings: BoosterSettings): String? =
-    withContext(Dispatchers.IO) {
-      val service = ensureBound() ?: return@withContext null
-      val module = ShizukuModulesCatalog.modules.firstOrNull { it.id == moduleId } ?: return@withContext null
-      val cmd = ShizukuModulesCatalog.buildDisableCommand(moduleId, settings)
-      val out = runSafe(service, cmd)
-      val msg = "[DESATIVADO] #${module.index} ${module.title} → $out"
-      _status.update { it.copy(lastCommandSummary = msg) }
-      msg
+      val commands = if (enable) module.applyCommands else module.disableCommands
+      if (commands.isEmpty()) {
+        val statusMsg =
+          if (enable) "Plugin '${module.name}' marcado ativo (${module.pluginType.label})."
+          else "Plugin '${module.name}' desativado."
+        _status.update { it.copy(lastCommandSummary = statusMsg) }
+        return@withContext (true to statusMsg)
+      }
+
+      val results = mutableListOf<String>()
+      commands.forEach { cmd ->
+        val effectiveCmd =
+          if (module.requiresRoot && (cmd.startsWith("resetprop ") || cmd.contains("/sys/"))) {
+            "su -c '$cmd' 2>/dev/null || true"
+          } else {
+            cmd
+          }
+        val out = runSafe(service, effectiveCmd)
+        results += out
+      }
+      val actionWord = if (enable) "ATIVADO" else "DESATIVADO"
+      val summary = "[$actionWord] ${module.name} via Shizuku (${commands.size} cmd(s)) → ${results.lastOrNull().orEmpty()}"
+      _status.update { it.copy(lastCommandSummary = summary) }
+      true to summary
     }
 
   suspend fun sampleAndroid11FpsTelemetry(): Pair<Int?, String?> =
@@ -688,36 +692,6 @@ class ShizukuBridge(private val context: Context) {
       msg
     }
 
-  suspend fun applyIphoneTouchModule(
-    config: IphoneTouchConfig,
-    addedGames: Set<String>,
-  ): ShizukuBoostReport? =
-    withContext(Dispatchers.IO) {
-      val service = ensureBound() ?: return@withContext null
-      val logs = mutableListOf<String>()
-      ShizukuModulesCatalog.buildIphoneTouchCommands(config, addedGames).forEach { (label, cmd) ->
-        val out = runSafe(service, cmd)
-        logs += "$label: $out"
-      }
-      val summary =
-        if (config.enabled) {
-          "Módulo iPhone Touch (${config.preset.label}) ativo • ${logs.size} ajustes executados!"
-        } else {
-          "Módulo iPhone Touch desativado e toque restaurado."
-        }
-      _status.update { it.copy(lastCommandSummary = summary) }
-      ShizukuBoostReport(executedCount = logs.size, summary = summary, details = logs)
-    }
-
-  suspend fun restoreTouchDefaults(): String? =
-    withContext(Dispatchers.IO) {
-      val service = ensureBound() ?: return@withContext null
-      val out = runSafe(service, ShizukuModulesCatalog.buildRestoreTouchDefaultsCommand())
-      val msg = "Sensibilidade e script de toque restaurados ao padrão ($out)"
-      _status.update { it.copy(lastCommandSummary = msg) }
-      msg
-    }
-
   suspend fun applyGameSessionTweaks(
     customDpi: Int?,
     touchScriptEnabled: Boolean,
@@ -792,6 +766,34 @@ class ShizukuBridge(private val context: Context) {
       summary
     }
 
+  suspend fun runGuardianMaintenance(
+    trimMemoryAndCache: Boolean,
+    liftBatterySaver: Boolean,
+    coolThermalLoad: Boolean,
+  ): List<String> =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(600L) ?: return@withContext emptyList()
+      val fixed = mutableListOf<String>()
+      if (liftBatterySaver) {
+        runSafe(service, "settings put global low_power 0; cmd power set-adaptive-power-saver-enabled false")
+        fixed += "Economia de energia suspensa via Shizuku"
+      }
+      if (coolThermalLoad) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          runSafe(service, "cmd power set-fixed-performance-mode-enabled false")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          runSafe(service, "cmd thermalservice reset")
+        }
+        fixed += "Carga térmica aliviada (thermalservice reset)"
+      }
+      if (trimMemoryAndCache) {
+        runSafe(service, "am kill-all; pm trim-caches 2147483648")
+        fixed += "Cache do sistema e processos ociosos limpos"
+      }
+      fixed
+    }
+
   suspend fun getTopResumedPackage(): String? =
     withContext(Dispatchers.IO) {
       val service = ensureBound(500L) ?: return@withContext null
@@ -800,7 +802,13 @@ class ShizukuBridge(private val context: Context) {
           service.runShellCommand(
             "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -n 1"
           )
-        Regex("([a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+)/").find(topRaw)?.groupValues?.getOrNull(1)
+        val firstMatch = Regex("([a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+)/").find(topRaw)?.groupValues?.getOrNull(1)
+        if (!firstMatch.isNullOrBlank()) return@withContext firstMatch
+        val winRaw =
+          service.runShellCommand(
+            "dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' | head -n 2"
+          )
+        Regex("([a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+)/").find(winRaw)?.groupValues?.getOrNull(1)
       } catch (_: Exception) {
         null
       }

@@ -149,6 +149,8 @@ fun DomainExpansionOverlay(
 
   val signPlayer = remember { MediaPlayer() }
   val burstPlayer = remember { MediaPlayer() }
+  var playersReleased by remember { mutableStateOf(false) }
+  var focusRequestRef by remember { mutableStateOf<AudioFocusRequest?>(null) }
 
   LaunchedEffect(Unit) {
     onStartIntro()
@@ -160,6 +162,7 @@ fun DomainExpansionOverlay(
           AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
             .setAudioAttributes(audioAttrs)
             .build()
+        focusRequestRef = req
         am.requestAudioFocus(req)
       } else {
         @Suppress("DEPRECATION")
@@ -234,6 +237,7 @@ fun DomainExpansionOverlay(
 
   // Keep player volumes synchronized if voice toggle changes
   LaunchedEffect(voiceEnabled) {
+    if (playersReleased) return@LaunchedEffect
     val vol = if (voiceEnabled) 1f else 0f
     runCatching { signPlayer.setVolume(vol, vol) }
     runCatching { burstPlayer.setVolume(vol, vol) }
@@ -290,6 +294,7 @@ fun DomainExpansionOverlay(
 
   DisposableEffect(Unit) {
     onDispose {
+      playersReleased = true
       runCatching {
         if (signPlayer.isPlaying) signPlayer.stop()
       }
@@ -299,6 +304,15 @@ fun DomainExpansionOverlay(
       }
       runCatching { burstPlayer.release() }
       runCatching { surfaceRef?.release() }
+      runCatching {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          focusRequestRef?.let { am.abandonAudioFocusRequest(it) }
+        } else {
+          @Suppress("DEPRECATION")
+          am.abandonAudioFocus(null)
+        }
+      }
     }
   }
 

@@ -38,11 +38,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeveloperMode
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.HealthAndSafety
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
@@ -54,9 +58,12 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Wallpaper
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.Whatshot
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,9 +76,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,6 +102,8 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.AnimationScaleOption
 import com.example.model.GraphicsBackend
+import com.example.model.GuardianSeverity
+import com.example.model.GuardianState
 import com.example.model.RefreshRateOption
 import com.example.model.WallpaperTheme
 import com.example.shizuku.ShizukuConnectionState
@@ -142,9 +155,14 @@ fun BoosterDashboardScreen(
   onSelectWallpaperTheme: (WallpaperTheme) -> Unit,
   onImportCustomWallpaper: (Uri) -> Unit,
   onClearCustomWallpaper: () -> Unit,
+  onToggleGuardianAutoRepair: (Boolean) -> Unit,
+  onRunGuardianHeal: () -> Unit,
+  onDismissGuardianAlert: (String) -> Unit,
+  onRestoreEverything: () -> Unit,
 ) {
   val settings = state.settings
   val telemetry = state.telemetry
+  var showRestoreEverythingDialog by remember { mutableStateOf(false) }
   val audioPickerLauncher =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
       if (uri != null) {
@@ -302,6 +320,17 @@ fun BoosterDashboardScreen(
           modifier = Modifier.weight(1f),
         )
       }
+    }
+
+    // IA Guardião (Silent, Zero-API Self-Healing Anti-Bug & Warnings)
+    item {
+      GuardianAiCard(
+        guardian = state.guardianState,
+        onToggleAutoRepair = onToggleGuardianAutoRepair,
+        onRunManualHeal = onRunGuardianHeal,
+        onDismissAlert = onDismissGuardianAlert,
+        modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
+      )
     }
 
     // Shizuku Privileged Engine Card
@@ -842,7 +871,343 @@ fun BoosterDashboardScreen(
       }
     }
 
+    // Unified Full Reset Card ("Restaurar Tudo Mesmo")
+    item {
+      VoidGlassCard(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
+        borderColor = ReversalRed.copy(alpha = 0.65f),
+      ) {
+        SectionHeader(
+          title = "Restauração Completa do App",
+          subtitle = "Remove tudo que foi alterado no celular, nos jogos e no Infinit Booster",
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+          text =
+            "Reverte de uma só vez: todos os módulos AxManager, DPI (400–1440) e Touch Script dos jogos, painéis flutuantes, resolução, Hz, escala de animação (1.0x), modo Root, renderização e mídias personalizadas.",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MutedLavender,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Button(
+          onClick = { showRestoreEverythingDialog = true },
+          modifier =
+            Modifier.fillMaxWidth()
+              .height(50.dp)
+              .testTag("restore_everything_button"),
+          shape = RoundedCornerShape(14.dp),
+          colors =
+            ButtonDefaults.buttonColors(
+              containerColor = ReversalRed.copy(alpha = 0.22f),
+              contentColor = ColdWhite,
+            ),
+          border = BorderStroke(1.5.dp, ReversalRed),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.RestartAlt,
+            contentDescription = null,
+            tint = ReversalRed,
+          )
+          Spacer(modifier = Modifier.size(8.dp))
+          Text(
+            text = "Restaurar Tudo Mesmo",
+            style = MaterialTheme.typography.titleMedium,
+            color = ColdWhite,
+          )
+        }
+      }
+    }
+
     item { Spacer(modifier = Modifier.height(12.dp)) }
+  }
+
+  if (showRestoreEverythingDialog) {
+    AlertDialog(
+      onDismissRequest = { showRestoreEverythingDialog = false },
+      containerColor = VoidSurfaceElevated,
+      titleContentColor = ColdWhite,
+      textContentColor = MutedLavender,
+      modifier = Modifier.testTag("restore_everything_dialog"),
+      icon = {
+        Icon(
+          imageVector = Icons.Rounded.RestartAlt,
+          contentDescription = null,
+          tint = ReversalRed,
+          modifier = Modifier.size(32.dp),
+        )
+      },
+      title = {
+        Text(
+          text = "Restaurar Tudo Mesmo?",
+          style = MaterialTheme.typography.titleLarge,
+        )
+      },
+      text = {
+        Text(
+          text =
+            "Isso vai desfazer absolutamente tudo que foi alterado: módulos ativos, DPI e script touch dos jogos, resolução, taxa de Hz, animações, modo Root, painéis flutuantes, renderização, papel de parede e músicas importadas. Deseja continuar?",
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showRestoreEverythingDialog = false
+            onRestoreEverything()
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = ReversalRed),
+          modifier = Modifier.testTag("confirm_restore_everything_button"),
+        ) {
+          Text("Sim, Restaurar Tudo", color = ColdWhite)
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showRestoreEverythingDialog = false }) {
+          Text("Cancelar", color = LimitlessCyan)
+        }
+      },
+    )
+  }
+}
+
+@Composable
+private fun GuardianAiCard(
+  guardian: GuardianState,
+  onToggleAutoRepair: (Boolean) -> Unit,
+  onRunManualHeal: () -> Unit,
+  onDismissAlert: (String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val healthColor =
+    when {
+      guardian.healthScore >= 85 -> NeonSuccess
+      guardian.healthScore >= 60 -> WarningAmber
+      else -> ReversalRed
+    }
+
+  VoidGlassCard(
+    modifier = modifier,
+    borderColor = healthColor.copy(alpha = 0.65f),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.weight(1f),
+      ) {
+        Icon(
+          imageVector = Icons.Rounded.HealthAndSafety,
+          contentDescription = null,
+          tint = healthColor,
+        )
+        Column {
+          Text(
+            text = "IA Guardião • Anti-Bug",
+            style = MaterialTheme.typography.titleMedium,
+            color = ColdWhite,
+          )
+          Text(
+            text = "Motor local sem API • Silenciosa (só avisos)",
+            style = MaterialTheme.typography.labelSmall,
+            color = LimitlessCyan,
+          )
+        }
+      }
+
+      Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = healthColor.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, healthColor.copy(alpha = 0.7f)),
+      ) {
+        Text(
+          text = "${guardian.healthScore}% SAÚDE",
+          style = MaterialTheme.typography.labelSmall,
+          color = healthColor,
+          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+      text = guardian.statusSummary,
+      style = MaterialTheme.typography.bodyMedium,
+      color = ColdWhite,
+    )
+    Text(
+      text = "${guardian.lastCheckLabel} • ${guardian.totalRepairsCount} correção(ões) automática(s)",
+      style = MaterialTheme.typography.labelSmall,
+      color = MutedLavender,
+    )
+
+    Spacer(modifier = Modifier.height(10.dp))
+    Row(
+      modifier =
+        Modifier.fillMaxWidth()
+          .clip(RoundedCornerShape(12.dp))
+          .background(VoidSurfaceElevated.copy(alpha = 0.65f))
+          .clickable { onToggleAutoRepair(!guardian.autoRepairEnabled) }
+          .padding(horizontal = 12.dp, vertical = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "Auto-Reparo Contínuo (Sem API)",
+          style = MaterialTheme.typography.titleSmall,
+          color = ColdWhite,
+        )
+        Text(
+          text = "Corrige bugs, quedas de FPS, RAM e serviços automaticamente",
+          style = MaterialTheme.typography.bodySmall,
+          color = MutedLavender,
+        )
+      }
+      Switch(
+        checked = guardian.autoRepairEnabled,
+        onCheckedChange = onToggleAutoRepair,
+        modifier = Modifier.testTag("switch_guardian_autorepair"),
+        colors =
+          SwitchDefaults.colors(
+            checkedThumbColor = VoidObsidian,
+            checkedTrackColor = NeonSuccess,
+          ),
+      )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+    Button(
+      onClick = onRunManualHeal,
+      enabled = !guardian.isAnalyzing,
+      modifier =
+        Modifier.fillMaxWidth()
+          .height(48.dp)
+          .testTag("guardian_manual_heal_button"),
+      shape = RoundedCornerShape(14.dp),
+      colors =
+        ButtonDefaults.buttonColors(
+          containerColor = HollowPurple,
+          contentColor = ColdWhite,
+        ),
+    ) {
+      if (guardian.isAnalyzing) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(18.dp),
+          color = ColdWhite,
+          strokeWidth = 2.dp,
+        )
+      } else {
+        Icon(
+          imageVector = Icons.Rounded.AutoFixHigh,
+          contentDescription = null,
+          tint = LimitlessCyan,
+          modifier = Modifier.size(18.dp),
+        )
+      }
+      Spacer(modifier = Modifier.size(8.dp))
+      Text(
+        text = if (guardian.isAnalyzing) "Analisando e Corrigindo..." else "Corrigir Bugs & Travamentos Agora",
+        style = MaterialTheme.typography.labelLarge,
+        color = ColdWhite,
+      )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+    if (guardian.alerts.isEmpty()) {
+      Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = VoidObsidian.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, NeonSuccess.copy(alpha = 0.35f)),
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.CheckCircle,
+            contentDescription = null,
+            tint = NeonSuccess,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = "Nenhum bug ou travamento detectado no momento.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MutedLavender,
+          )
+        }
+      }
+    } else {
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        guardian.alerts.take(4).forEach { alert ->
+          val (accent, icon) =
+            when (alert.severity) {
+              GuardianSeverity.FIXED -> NeonSuccess to Icons.Rounded.CheckCircle
+              GuardianSeverity.WARNING -> WarningAmber to Icons.Rounded.WarningAmber
+              GuardianSeverity.INFO -> LimitlessCyan to Icons.Rounded.Info
+            }
+          Surface(
+            modifier = Modifier.fillMaxWidth().testTag("guardian_alert_${alert.id}"),
+            shape = RoundedCornerShape(10.dp),
+            color = VoidObsidian.copy(alpha = 0.82f),
+            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+          ) {
+            Row(
+              modifier = Modifier.padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+              verticalAlignment = Alignment.Top,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.padding(top = 2.dp).size(18.dp),
+              )
+              Column(modifier = Modifier.weight(1f)) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Text(
+                    text = alert.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ColdWhite,
+                    modifier = Modifier.weight(1f, fill = false),
+                  )
+                  Text(
+                    text = alert.timestampLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = accent,
+                  )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                  text = alert.detail,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MutedLavender,
+                )
+              }
+              IconButton(
+                onClick = { onDismissAlert(alert.id) },
+                modifier = Modifier.minimumInteractiveComponentSize(),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Close,
+                  contentDescription = "Dispensar aviso",
+                  tint = MutedLavender,
+                  modifier = Modifier.size(16.dp),
+                )
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 

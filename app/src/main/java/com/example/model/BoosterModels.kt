@@ -48,50 +48,6 @@ enum class AnimationScaleOption(val scale: Float, val label: String, val subtitl
   DEFAULT(1.0f, "1.0x", "Padrão"),
 }
 
-enum class IphoneTouchPreset(
-  val id: String,
-  val label: String,
-  val subtitle: String,
-  val pointerSpeed: Int,
-  val longPressMs: Int,
-  val tapTimeoutMs: Int,
-) {
-  IOS_LINEAR(
-    id = "IOS_LINEAR",
-    label = "iOS Linear 120Hz",
-    subtitle = "Curva suave e precisa inspirada no toque do iPhone",
-    pointerSpeed = 5,
-    longPressMs = 200,
-    tapTimeoutMs = 75,
-  ),
-  ZERO_DELAY(
-    id = "ZERO_DELAY",
-    label = "Zero-Delay Pro",
-    subtitle = "Resposta imediata com atraso mínimo de toque",
-    pointerSpeed = 6,
-    longPressMs = 160,
-    tapTimeoutMs = 60,
-  ),
-  ULTRA_PUXADA(
-    id = "ULTRA_PUXADA",
-    label = "Sensibilidade Alta+",
-    subtitle = "Velocidade máxima de arraste para jogos competitivos",
-    pointerSpeed = 7,
-    longPressMs = 135,
-    tapTimeoutMs = 50,
-  ),
-}
-
-data class IphoneTouchConfig(
-  val enabled: Boolean = false,
-  val preset: IphoneTouchPreset = IphoneTouchPreset.IOS_LINEAR,
-  val pointerSpeed: Int = 5,
-  val longPressMs: Int = 180,
-  val zeroBackpressure: Boolean = true,
-  val smoothFlingScroll: Boolean = true,
-  val multiTouchGameBoost: Boolean = true,
-)
-
 data class PerGameConfig(
   val packageName: String,
   val customDpi: Int? = null,
@@ -141,15 +97,6 @@ data class InstalledAppItem(
   val isGameCategory: Boolean,
 )
 
-data class PerformanceModule(
-  val id: String,
-  val index: Int,
-  val title: String,
-  val category: String,
-  val description: String,
-  val commandPreview: String,
-)
-
 data class NativeScreenSpec(
   val widthPx: Int = 1080,
   val heightPx: Int = 2400,
@@ -176,8 +123,7 @@ data class BoosterSettings(
   val voiceEnabled: Boolean = true,
   val addedGamePackages: Set<String> = emptySet(),
   val perGameConfigs: Map<String, PerGameConfig> = emptyMap(),
-  val iphoneTouchConfig: IphoneTouchConfig = IphoneTouchConfig(),
-  val enabledModuleIds: Set<String> = emptySet(),
+  val axOnlyModeEnabled: Boolean = false,
   val resolutionScalePercent: Int = 100,
   val resolutionCustomWidth: Int = 0,
   val resolutionCustomHeight: Int = 0,
@@ -194,6 +140,32 @@ data class BoosterSettings(
   val wallpaperTheme: WallpaperTheme = WallpaperTheme.VAZIO_ROXO,
   val customWallpaperName: String = "",
   val wallpaperRevision: Int = 0,
+  val guardianAutoRepairEnabled: Boolean = true,
+)
+
+enum class GuardianSeverity {
+  INFO,
+  WARNING,
+  FIXED,
+}
+
+data class GuardianAlert(
+  val id: String,
+  val title: String,
+  val detail: String,
+  val severity: GuardianSeverity,
+  val timestampLabel: String,
+  val autoFixed: Boolean = false,
+)
+
+data class GuardianState(
+  val autoRepairEnabled: Boolean = true,
+  val isAnalyzing: Boolean = false,
+  val healthScore: Int = 100,
+  val statusSummary: String = "Sistema protegido • Monitorando bugs e travamentos em tempo real",
+  val totalRepairsCount: Int = 0,
+  val lastCheckLabel: String = "Aguardando varredura",
+  val alerts: List<GuardianAlert> = emptyList(),
 )
 
 data class DeviceTelemetry(

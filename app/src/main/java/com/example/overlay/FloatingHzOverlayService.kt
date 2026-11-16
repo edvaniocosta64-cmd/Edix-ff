@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -44,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class FloatingHzOverlayService : Service() {
 
@@ -52,6 +54,8 @@ class FloatingHzOverlayService : Service() {
     const val NOTIFICATION_ID = 3090
     const val ACTION_START = "com.example.action.FLOAT_HZ_START"
     const val ACTION_STOP = "com.example.action.FLOAT_HZ_STOP"
+
+    @Volatile var isRunning: Boolean = false
 
     fun start(context: Context) {
       val intent = Intent(context, FloatingHzOverlayService::class.java).apply { action = ACTION_START }
@@ -63,8 +67,12 @@ class FloatingHzOverlayService : Service() {
     }
 
     fun stop(context: Context) {
+      if (!isRunning) return
       val intent = Intent(context, FloatingHzOverlayService::class.java).apply { action = ACTION_STOP }
-      context.startService(intent)
+      val sent = runCatching { context.startService(intent) }.isSuccess
+      if (!sent) {
+        runCatching { context.stopService(Intent(context, FloatingHzOverlayService::class.java)) }
+      }
     }
   }
 
@@ -135,6 +143,7 @@ class FloatingHzOverlayService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    isRunning = true
 
     if (overlayRoot == null) {
       scope.launch {
@@ -671,8 +680,11 @@ class FloatingHzOverlayService : Service() {
       }
   }
 
-  private fun refreshTelemetryLine() {
-    val t = telemetryManager.readTelemetry(selectedHz, 1000f / selectedHz.coerceAtLeast(1).toFloat())
+  private suspend fun refreshTelemetryLine() {
+    val t =
+      withContext(Dispatchers.IO) {
+        telemetryManager.readTelemetry(selectedHz, 1000f / selectedHz.coerceAtLeast(1).toFloat())
+      }
     miniPillText?.text = "GT • ${t.currentDisplayHz}Hz"
 
     val now = System.currentTimeMillis()
@@ -860,7 +872,13 @@ class FloatingHzOverlayService : Service() {
       resources.displayMetrics,
     ).toInt()
 
+  override fun onConfigurationChanged(newConfig: Configuration) {
+    super.onConfigurationChanged(newConfig)
+    overlayRoot?.post { clampWindowPositionToScreen() }
+  }
+
   override fun onDestroy() {
+    isRunning = false
     telemetryJob?.cancel()
     settingsSyncJob?.cancel()
     miniPulseAnimator?.cancel()

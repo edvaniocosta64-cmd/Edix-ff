@@ -11,8 +11,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.BoosterSettings
 import com.example.model.CoolerSpeed
 import com.example.model.GraphicsBackend
-import com.example.model.IphoneTouchConfig
-import com.example.model.IphoneTouchPreset
 import com.example.model.PerGameConfig
 import com.example.model.RefreshRateOption
 import com.example.model.WallpaperTheme
@@ -34,7 +32,7 @@ class BoosterPreferencesRepository(private val context: Context) {
     val COOLER_SPEED = stringPreferencesKey("cooler_speed")
     val VOICE_ENABLED = booleanPreferencesKey("voice_enabled")
     val ADDED_GAMES = stringSetPreferencesKey("added_games")
-    val ENABLED_MODULES = stringSetPreferencesKey("enabled_modules")
+    val AX_ONLY_MODE = booleanPreferencesKey("ax_only_mode")
     val RES_SCALE_PERCENT = intPreferencesKey("res_scale_percent")
     val RES_CUSTOM_W = intPreferencesKey("res_custom_w")
     val RES_CUSTOM_H = intPreferencesKey("res_custom_h")
@@ -53,13 +51,7 @@ class BoosterPreferencesRepository(private val context: Context) {
     val WALLPAPER_REVISION = intPreferencesKey("wallpaper_revision")
     val ANIMATION_SCALE = floatPreferencesKey("animation_scale")
     val PER_GAME_CONFIGS = stringSetPreferencesKey("per_game_configs")
-    val IPHONE_TOUCH_ENABLED = booleanPreferencesKey("iphone_touch_enabled")
-    val IPHONE_TOUCH_PRESET = stringPreferencesKey("iphone_touch_preset")
-    val IPHONE_TOUCH_POINTER = intPreferencesKey("iphone_touch_pointer")
-    val IPHONE_TOUCH_LONG_PRESS = intPreferencesKey("iphone_touch_long_press")
-    val IPHONE_TOUCH_BACKPRESSURE = booleanPreferencesKey("iphone_touch_backpressure")
-    val IPHONE_TOUCH_SMOOTH_FLING = booleanPreferencesKey("iphone_touch_smooth_fling")
-    val IPHONE_TOUCH_MULTITOUCH = booleanPreferencesKey("iphone_touch_multitouch")
+    val GUARDIAN_AUTO_REPAIR = booleanPreferencesKey("guardian_auto_repair")
   }
 
   val settingsFlow: Flow<BoosterSettings> =
@@ -86,38 +78,26 @@ class BoosterPreferencesRepository(private val context: Context) {
             )
         }.toMap()
 
-      val iphonePresetId = prefs[Keys.IPHONE_TOUCH_PRESET] ?: IphoneTouchPreset.IOS_LINEAR.id
-      val iphoneConfig =
-        IphoneTouchConfig(
-          enabled = prefs[Keys.IPHONE_TOUCH_ENABLED] ?: false,
-          preset =
-            IphoneTouchPreset.entries.firstOrNull { it.id == iphonePresetId }
-              ?: IphoneTouchPreset.IOS_LINEAR,
-          pointerSpeed = (prefs[Keys.IPHONE_TOUCH_POINTER] ?: 5).coerceIn(1, 7),
-          longPressMs = (prefs[Keys.IPHONE_TOUCH_LONG_PRESS] ?: 180).coerceIn(120, 350),
-          zeroBackpressure = prefs[Keys.IPHONE_TOUCH_BACKPRESSURE] ?: true,
-          smoothFlingScroll = prefs[Keys.IPHONE_TOUCH_SMOOTH_FLING] ?: true,
-          multiTouchGameBoost = prefs[Keys.IPHONE_TOUCH_MULTITOUCH] ?: true,
-        )
-
       BoosterSettings(
         boostActive = prefs[Keys.BOOST_ACTIVE] ?: false,
         fpsUnlocked = prefs[Keys.FPS_UNLOCKED] ?: true,
         performanceMax = prefs[Keys.PERFORMANCE_MAX] ?: true,
         ignoreThermalLimit = prefs[Keys.IGNORE_THERMAL_LIMIT] ?: false,
         graphicsBackend =
-          GraphicsBackend.entries.firstOrNull { it.id == backendId } ?: GraphicsBackend.VULKAN_MAX,
+          GraphicsBackend.entries.firstOrNull { it.id == backendId }
+            ?: GraphicsBackend.VULKAN_MAX,
         targetRefreshRate =
-          RefreshRateOption.entries.firstOrNull { it.hz == targetHz } ?: RefreshRateOption.HZ_120,
+          RefreshRateOption.entries.firstOrNull { it.hz == targetHz }
+            ?: RefreshRateOption.HZ_120,
         animationScale = (prefs[Keys.ANIMATION_SCALE] ?: 0.25f).coerceIn(0f, 1f),
         coolerActive = prefs[Keys.COOLER_ACTIVE] ?: false,
         coolerSpeed =
-          CoolerSpeed.entries.firstOrNull { it.id == coolerSpeedId } ?: CoolerSpeed.TURBO,
+          CoolerSpeed.entries.firstOrNull { it.id == coolerSpeedId }
+            ?: CoolerSpeed.TURBO,
         voiceEnabled = prefs[Keys.VOICE_ENABLED] ?: true,
         addedGamePackages = prefs[Keys.ADDED_GAMES] ?: emptySet(),
         perGameConfigs = perGameMap,
-        iphoneTouchConfig = iphoneConfig,
-        enabledModuleIds = prefs[Keys.ENABLED_MODULES] ?: emptySet(),
+        axOnlyModeEnabled = prefs[Keys.AX_ONLY_MODE] ?: false,
         resolutionScalePercent = prefs[Keys.RES_SCALE_PERCENT] ?: 100,
         resolutionCustomWidth = prefs[Keys.RES_CUSTOM_W] ?: 0,
         resolutionCustomHeight = prefs[Keys.RES_CUSTOM_H] ?: 0,
@@ -136,6 +116,7 @@ class BoosterPreferencesRepository(private val context: Context) {
             ?: WallpaperTheme.VAZIO_ROXO,
         customWallpaperName = prefs[Keys.CUSTOM_WALLPAPER_NAME] ?: "",
         wallpaperRevision = prefs[Keys.WALLPAPER_REVISION] ?: 0,
+        guardianAutoRepairEnabled = prefs[Keys.GUARDIAN_AUTO_REPAIR] ?: true,
       )
     }
 
@@ -189,15 +170,8 @@ class BoosterPreferencesRepository(private val context: Context) {
     }
   }
 
-  suspend fun setModuleEnabled(moduleId: String, enabled: Boolean) {
-    context.boosterDataStore.edit { prefs ->
-      val current = prefs[Keys.ENABLED_MODULES] ?: emptySet()
-      prefs[Keys.ENABLED_MODULES] = if (enabled) current + moduleId else current - moduleId
-    }
-  }
-
-  suspend fun setEnabledModules(moduleIds: Set<String>) {
-    context.boosterDataStore.edit { it[Keys.ENABLED_MODULES] = moduleIds }
+  suspend fun setAxOnlyModeEnabled(enabled: Boolean) {
+    context.boosterDataStore.edit { it[Keys.AX_ONLY_MODE] = enabled }
   }
 
   suspend fun setResolutionConfig(
@@ -289,30 +263,46 @@ class BoosterPreferencesRepository(private val context: Context) {
     }
   }
 
-  suspend fun setIphoneTouchConfig(config: IphoneTouchConfig) {
+  suspend fun setGuardianAutoRepairEnabled(enabled: Boolean) {
+    context.boosterDataStore.edit { it[Keys.GUARDIAN_AUTO_REPAIR] = enabled }
+  }
+
+  suspend fun pruneOrphanPerGameConfigs(validPackages: Set<String>): Int {
+    var removedCount = 0
     context.boosterDataStore.edit { prefs ->
-      prefs[Keys.IPHONE_TOUCH_ENABLED] = config.enabled
-      prefs[Keys.IPHONE_TOUCH_PRESET] = config.preset.id
-      prefs[Keys.IPHONE_TOUCH_POINTER] = config.pointerSpeed.coerceIn(1, 7)
-      prefs[Keys.IPHONE_TOUCH_LONG_PRESS] = config.longPressMs.coerceIn(120, 350)
-      prefs[Keys.IPHONE_TOUCH_BACKPRESSURE] = config.zeroBackpressure
-      prefs[Keys.IPHONE_TOUCH_SMOOTH_FLING] = config.smoothFlingScroll
-      prefs[Keys.IPHONE_TOUCH_MULTITOUCH] = config.multiTouchGameBoost
+      val current = prefs[Keys.PER_GAME_CONFIGS] ?: emptySet()
+      val filtered =
+        current.filterTo(mutableSetOf()) { entry ->
+          val pkg = entry.substringBefore("|")
+          val keep = pkg.isNotBlank() && pkg in validPackages
+          if (!keep) removedCount++
+          keep
+        }
+      if (removedCount > 0) {
+        prefs[Keys.PER_GAME_CONFIGS] = filtered
+      }
     }
+    return removedCount
   }
 
   suspend fun restoreFactoryDefaultsState() {
     context.boosterDataStore.edit { prefs ->
+      val nextRev = (prefs[Keys.WALLPAPER_REVISION] ?: 0) + 1
       prefs[Keys.BOOST_ACTIVE] = false
       prefs[Keys.FPS_UNLOCKED] = false
       prefs[Keys.PERFORMANCE_MAX] = false
       prefs[Keys.IGNORE_THERMAL_LIMIT] = false
       prefs[Keys.COOLER_ACTIVE] = false
+      prefs[Keys.COOLER_SPEED] = CoolerSpeed.TURBO.id
+      prefs[Keys.VOICE_ENABLED] = true
       prefs[Keys.GRAPHICS_BACKEND] = GraphicsBackend.VULKAN_MAX.id
-      prefs[Keys.ENABLED_MODULES] = emptySet()
+      prefs[Keys.AX_ONLY_MODE] = false
+      prefs[Keys.ADDED_GAMES] = emptySet()
+      prefs[Keys.PER_GAME_CONFIGS] = emptySet()
       prefs[Keys.RES_SCALE_PERCENT] = 100
       prefs[Keys.RES_CUSTOM_W] = 0
       prefs[Keys.RES_CUSTOM_H] = 0
+      prefs[Keys.LOCK_ASPECT_RATIO] = true
       prefs[Keys.TARGET_HZ] = 60
       prefs[Keys.ANIMATION_SCALE] = 1.0f
       prefs[Keys.ROOT_TOTAL_PERF] = false
@@ -320,7 +310,14 @@ class BoosterPreferencesRepository(private val context: Context) {
       prefs[Keys.FLOATING_HZ_OVERLAY] = false
       prefs[Keys.FLOATING_RES_OVERLAY] = false
       prefs[Keys.FLOATING_FPS_METER] = false
-      prefs[Keys.IPHONE_TOUCH_ENABLED] = false
+      prefs[Keys.CUSTOM_DOMAIN_AUDIO_NAME] = ""
+      prefs[Keys.BG_MUSIC_ENABLED] = false
+      prefs[Keys.BG_MUSIC_NAME] = ""
+      prefs[Keys.BG_MUSIC_VOLUME] = 0.45f
+      prefs[Keys.WALLPAPER_THEME] = WallpaperTheme.VAZIO_ROXO.id
+      prefs[Keys.CUSTOM_WALLPAPER_NAME] = ""
+      prefs[Keys.WALLPAPER_REVISION] = nextRev
+      prefs[Keys.GUARDIAN_AUTO_REPAIR] = true
     }
   }
 }

@@ -29,8 +29,9 @@ class ResolutionPanelService : Service() {
     const val ACTION_START = "com.example.action.RES_PANEL_START"
     const val ACTION_APPLY_65 = "com.example.action.RES_APPLY_65"
     const val ACTION_APPLY_80 = "com.example.action.RES_APPLY_80"
-    const val ACTION_RESTORE_NATIVE = "com.example.action.RES_RESTORE_NATIVE"
     const val ACTION_STOP = "com.example.action.RES_PANEL_STOP"
+
+    @Volatile var isRunning: Boolean = false
 
     fun start(context: Context) {
       val intent = Intent(context, ResolutionPanelService::class.java).apply { action = ACTION_START }
@@ -42,8 +43,12 @@ class ResolutionPanelService : Service() {
     }
 
     fun stop(context: Context) {
+      if (!isRunning) return
       val intent = Intent(context, ResolutionPanelService::class.java).apply { action = ACTION_STOP }
-      context.startService(intent)
+      val sent = runCatching { context.startService(intent) }.isSuccess
+      if (!sent) {
+        runCatching { context.stopService(Intent(context, ResolutionPanelService::class.java)) }
+      }
     }
   }
 
@@ -73,7 +78,6 @@ class ResolutionPanelService : Service() {
       }
       ACTION_APPLY_65 -> applyScalePreset(65)
       ACTION_APPLY_80 -> applyScalePreset(80)
-      ACTION_RESTORE_NATIVE -> restoreNative()
       else -> {
         val spec = telemetryManager.readNativeScreenSpec()
         currentStatusLine = "Tela ${spec.widthPx}x${spec.heightPx} (${spec.aspectRatioLabel}) • Toque para abrir painel"
@@ -90,6 +94,7 @@ class ResolutionPanelService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    isRunning = true
     return START_STICKY
   }
 
@@ -103,19 +108,6 @@ class ResolutionPanelService : Service() {
       currentStatusLine =
         if (res != null) "Ativa: ${computed.widthPx}x${computed.heightPx} (${percent}% • ${spec.aspectRatioLabel})"
         else "Autorize o Shizuku no app para aplicar ${computed.widthPx}x${computed.heightPx}"
-      updateNotification()
-    }
-  }
-
-  private fun restoreNative() {
-    val spec = telemetryManager.readNativeScreenSpec()
-    serviceScope.launch {
-      shizukuBridge.refreshState()
-      val res = shizukuBridge.restoreNativeResolution()
-      repository.setResolutionConfig(100, spec.widthPx, spec.heightPx, true)
-      currentStatusLine =
-        if (res != null) "Resolução Nativa restaurada (${spec.widthPx}x${spec.heightPx})"
-        else "Autorize o Shizuku no app para restaurar"
       updateNotification()
     }
   }
@@ -140,7 +132,6 @@ class ResolutionPanelService : Service() {
 
     val p65 = actionPendingIntent(ACTION_APPLY_65, 101)
     val p80 = actionPendingIntent(ACTION_APPLY_80, 102)
-    val pReset = actionPendingIntent(ACTION_RESTORE_NATIVE, 103)
     val pStop = actionPendingIntent(ACTION_STOP, 104)
 
     return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -153,7 +144,6 @@ class ResolutionPanelService : Service() {
       .setContentIntent(popupPending)
       .addAction(0, "65% FPS", p65)
       .addAction(0, "80% HD+", p80)
-      .addAction(0, "Nativa", pReset)
       .addAction(0, "Fechar", pStop)
       .build()
   }
@@ -185,6 +175,7 @@ class ResolutionPanelService : Service() {
   }
 
   override fun onDestroy() {
+    isRunning = false
     shizukuBridge.release()
     serviceScope.cancel()
     super.onDestroy()

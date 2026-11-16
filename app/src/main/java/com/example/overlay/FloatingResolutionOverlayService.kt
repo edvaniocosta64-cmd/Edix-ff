@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -50,6 +51,8 @@ class FloatingResolutionOverlayService : Service() {
     const val ACTION_START = "com.example.action.FLOAT_RES_START"
     const val ACTION_STOP = "com.example.action.FLOAT_RES_STOP"
 
+    @Volatile var isRunning: Boolean = false
+
     fun start(context: Context) {
       val intent = Intent(context, FloatingResolutionOverlayService::class.java).apply { action = ACTION_START }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -60,8 +63,12 @@ class FloatingResolutionOverlayService : Service() {
     }
 
     fun stop(context: Context) {
+      if (!isRunning) return
       val intent = Intent(context, FloatingResolutionOverlayService::class.java).apply { action = ACTION_STOP }
-      context.startService(intent)
+      val sent = runCatching { context.startService(intent) }.isSuccess
+      if (!sent) {
+        runCatching { context.stopService(Intent(context, FloatingResolutionOverlayService::class.java)) }
+      }
     }
   }
 
@@ -118,6 +125,7 @@ class FloatingResolutionOverlayService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    isRunning = true
 
     if (overlayRoot == null) {
       attachCustomResolutionOverlay()
@@ -316,13 +324,6 @@ class FloatingResolutionOverlayService : Service() {
         setFocusableForKeyboard(false)
         applyTypedResolution()
       }
-    val resetBtn =
-      createActionChip("Nativa", "#2E0A14", "#FF8FA3") {
-        widthInput?.clearFocus()
-        heightInput?.clearFocus()
-        setFocusableForKeyboard(false)
-        restoreNativeResolution()
-      }
     val gameBtn =
       createActionChip("Voltar Jogo", "#112233", "#00E5FF") {
         widthInput?.clearFocus()
@@ -335,7 +336,6 @@ class FloatingResolutionOverlayService : Service() {
       LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         .apply { rightMargin = dp(6) }
     actionsRow.addView(applyBtn, lpBtn)
-    actionsRow.addView(resetBtn, lpBtn)
     actionsRow.addView(gameBtn)
     body.addView(actionsRow)
 
@@ -491,19 +491,6 @@ class FloatingResolutionOverlayService : Service() {
     }
   }
 
-  private fun restoreNativeResolution() {
-    isUpdatingFields = true
-    widthInput?.setText(screenSpec.widthPx.toString())
-    heightInput?.setText(screenSpec.heightPx.toString())
-    isUpdatingFields = false
-    scope.launch {
-      shizukuBridge.refreshState()
-      val msg = shizukuBridge.restoreNativeResolution()
-      repository.setResolutionConfig(100, screenSpec.widthPx, screenSpec.heightPx, true)
-      statusLine?.text = msg ?: "Nativa (${screenSpec.widthPx}x${screenSpec.heightPx})"
-    }
-  }
-
   private fun toggleMinimize() {
     isMinimized = !isMinimized
     if (isMinimized) {
@@ -581,7 +568,25 @@ class FloatingResolutionOverlayService : Service() {
       resources.displayMetrics,
     ).toInt()
 
+  override fun onConfigurationChanged(newConfig: Configuration) {
+    super.onConfigurationChanged(newConfig)
+    val lp = layoutParams ?: return
+    val root = overlayRoot ?: return
+    val (screenW, screenH) =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val bounds = windowManager.currentWindowMetrics.bounds
+        bounds.width() to bounds.height()
+      } else {
+        val dm = resources.displayMetrics
+        dm.widthPixels to dm.heightPixels
+      }
+    lp.x = lp.x.coerceIn(0, (screenW - dp(220)).coerceAtLeast(0))
+    lp.y = lp.y.coerceIn(dp(20), (screenH - dp(180)).coerceAtLeast(0))
+    runCatching { windowManager.updateViewLayout(root, lp) }
+  }
+
   override fun onDestroy() {
+    isRunning = false
     overlayRoot?.let {
       try {
         windowManager.removeView(it)

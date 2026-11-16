@@ -1,0 +1,528 @@
+package com.example.guardian
+
+import android.content.Context
+import android.os.Build
+import com.example.data.BoosterPreferencesRepository
+import com.example.data.DeviceTelemetryManager
+import com.example.model.BoosterSettings
+import com.example.model.BottleneckSeverity
+import com.example.model.DeviceTelemetry
+import com.example.model.GuardianAlert
+import com.example.model.GuardianSeverity
+import com.example.model.GuardianState
+import com.example.overlay.FloatingFpsMeterService
+import com.example.overlay.FloatingHzOverlayService
+import com.example.overlay.FloatingResolutionOverlayService
+import com.example.resolution.ResolutionPanelService
+import com.example.shizuku.ShizukuBridge
+import com.example.shizuku.ShizukuConnectionState
+import com.example.shizuku.ShizukuStatus
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+data class GuardianCycleResult(
+  val state: GuardianState,
+  val userNotice: String? = null,
+)
+
+class InfinitGuardianEngine(private val context: Context) {
+
+  private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+  private val alertHistory = mutableListOf<GuardianAlert>()
+
+  private var totalRepairsCount = 0
+  private var lastMemoryHealAtMs = 0L
+  private var lastFrameHealAtMs = 0L
+  private var lastShizukuRebindAtMs = 0L
+  private var bindingStartedAtMs = 0L
+
+  suspend fun auditAndHeal(
+    telemetry: DeviceTelemetry,
+    settings: BoosterSettings,
+    shizukuStatus: ShizukuStatus,
+    canDrawOverlays: Boolean,
+    installedPackageSet: Set<String>,
+    forceManualHeal: Boolean,
+    repository: BoosterPreferencesRepository,
+    telemetryManager: DeviceTelemetryManager,
+    shizukuBridge: ShizukuBridge,
+  ): GuardianCycleResult {
+    val now = System.currentTimeMillis()
+    val timestamp = timeFormat.format(Date(now))
+    val autoRepair = settings.guardianAutoRepairEnabled
+    val shouldHeal = autoRepair || forceManualHeal
+    val shizukuConnected = shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+    val newAlerts = mutableListOf<GuardianAlert>()
+    val notices = mutableListOf<String>()
+    var activeIssuePenalty = 0
+
+    // 1. Check & fix Overlay Permission Desync / Killed Overlay Services
+    val anyOverlayFlag =
+      settings.floatingHzOverlayEnabled ||
+        settings.floatingResolutionOverlayEnabled ||
+        settings.floatingFpsMeterEnabled
+
+    if (anyOverlayFlag && !canDrawOverlays) {
+      activeIssuePenalty += 10
+      if (shouldHeal) {
+        if (settings.floatingHzOverlayEnabled) {
+          repository.setFloatingHzOverlayEnabled(false)
+          FloatingHzOverlayService.stop(context)
+        }
+        if (settings.floatingResolutionOverlayEnabled) {
+          repository.setFloatingResolutionOverlayEnabled(false)
+          FloatingResolutionOverlayService.stop(context)
+        }
+        if (settings.floatingFpsMeterEnabled) {
+          repository.setFloatingFpsMeterEnabled(false)
+          FloatingFpsMeterService.stop(context)
+        }
+        totalRepairsCount++
+        val alert =
+          GuardianAlert(
+            id = "overlay_perm_sync",
+            title = "Estado de painel flutuante corrigido",
+            detail =
+              "A permissão de sobreposição foi revogada no Android; a IA desativou os botões presos para evitar falhas.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+        newAlerts += alert
+        notices += "IA corrigiu estado de painel flutuante sem permissão"
+      } else {
+        newAlerts +=
+          GuardianAlert(
+            id = "overlay_perm_sync",
+            title = "Aviso: Painel marcado ativo sem permissão",
+            detail = "Permissão 'Sobrepor a outros apps' desativada. Ative o Auto-Reparo ou conceda acesso.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    } else if (canDrawOverlays && shouldHeal) {
+      // Restart overlay services automatically if OEM killed them in background while marked enabled
+      var restartedAny = false
+      if (settings.floatingHzOverlayEnabled && !FloatingHzOverlayService.isRunning) {
+        FloatingHzOverlayService.start(context)
+        restartedAny = true
+      }
+      if (settings.floatingResolutionOverlayEnabled && !FloatingResolutionOverlayService.isRunning) {
+        FloatingResolutionOverlayService.start(context)
+        restartedAny = true
+      }
+      if (settings.floatingFpsMeterEnabled &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+        !FloatingFpsMeterService.isRunning
+      ) {
+        FloatingFpsMeterService.start(context)
+        restartedAny = true
+      }
+      if (restartedAny) {
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "overlay_revived",
+            title = "Painel flutuante restaurado",
+            detail = "O sistema fechou o serviço flutuante em segundo plano e a IA reativou automaticamente.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+      }
+    }
+
+    // Check Android < 11 FPS meter guard
+    if (settings.floatingFpsMeterEnabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+      if (shouldHeal) {
+        repository.setFloatingFpsMeterEnabled(false)
+        FloatingFpsMeterService.stop(context)
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "fps_meter_sdk",
+            title = "Compatibilidade corrigida",
+            detail = "Medidor de FPS flutuante requer Android 11+ e foi ajustado com segurança.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+      }
+    }
+
+    // 2. Check & fix background resolution panel service sync
+    if (settings.backgroundResolutionPanelEnabled && !ResolutionPanelService.isRunning && shouldHeal) {
+      ResolutionPanelService.start(context)
+      totalRepairsCount++
+      newAlerts +=
+        GuardianAlert(
+          id = "bg_res_panel_revived",
+          title = "Painel de resolução reativado",
+          detail = "A notificação persistente foi interrompida pelo sistema e reestabelecida pela IA.",
+          severity = GuardianSeverity.FIXED,
+          timestampLabel = timestamp,
+          autoFixed = true,
+        )
+    }
+
+    // 3. Orphan Per-Game Configs & Stale Music Toggle Bug Fix
+    if (installedPackageSet.isNotEmpty() && settings.perGameConfigs.isNotEmpty()) {
+      val hasOrphans = settings.perGameConfigs.keys.any { it !in installedPackageSet }
+      if (hasOrphans) {
+        activeIssuePenalty += 5
+        if (shouldHeal) {
+          val pruned = repository.pruneOrphanPerGameConfigs(installedPackageSet)
+          if (pruned > 0) {
+            totalRepairsCount++
+            newAlerts +=
+              GuardianAlert(
+                id = "orphan_game_cfgs",
+                title = "Configurações de jogos removidos limpas ($pruned)",
+                detail = "A IA removeu perfis antigos de DPI/Touch de aplicativos que não existem mais.",
+                severity = GuardianSeverity.FIXED,
+                timestampLabel = timestamp,
+                autoFixed = true,
+              )
+          }
+        }
+      }
+    }
+
+    if (settings.bgMusicEnabled && settings.bgMusicName.isBlank()) {
+      activeIssuePenalty += 5
+      if (shouldHeal) {
+        repository.setBgMusicEnabled(false)
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "stale_bg_music",
+            title = "Botão de música sem arquivo corrigido",
+            detail = "A chave de música de fundo estava ativa sem trilha carregada e foi normalizada.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+      }
+    }
+
+    // 4. Temp file leaks & heavy app cache (>8MB)
+    val (removedTmp, cacheFreedMb) =
+      withContext(Dispatchers.IO) { telemetryManager.cleanupOrphanTempFilesAndHeavyCache() }
+    if (removedTmp > 0 || cacheFreedMb > 0L) {
+      totalRepairsCount++
+      newAlerts +=
+        GuardianAlert(
+          id = "temp_cache_sweep",
+          title = "Arquivos temporários e cache limpos",
+          detail = "Removidos $removedTmp temporário(s) e liberados ${cacheFreedMb} MB para evitar engasgos.",
+          severity = GuardianSeverity.FIXED,
+          timestampLabel = timestamp,
+          autoFixed = true,
+        )
+    }
+
+    // 5. Shizuku stalled in BINDING or disconnected while Root Perf is on
+    if (shizukuStatus.connectionState == ShizukuConnectionState.BINDING) {
+      if (bindingStartedAtMs == 0L) bindingStartedAtMs = now
+      if (now - bindingStartedAtMs >= 5000L && now - lastShizukuRebindAtMs >= 8000L) {
+        activeIssuePenalty += 10
+        if (shouldHeal) {
+          lastShizukuRebindAtMs = now
+          shizukuBridge.refreshState()
+          totalRepairsCount++
+          newAlerts +=
+            GuardianAlert(
+              id = "shizuku_rebind",
+              title = "Reconexão Shizuku reiniciada",
+              detail = "O vínculo com o Shizuku demorou para responder e a IA forçou uma nova checagem.",
+              severity = GuardianSeverity.FIXED,
+              timestampLabel = timestamp,
+              autoFixed = true,
+            )
+        }
+      }
+    } else {
+      bindingStartedAtMs = 0L
+    }
+
+    if (settings.rootTotalPerformanceEnabled &&
+      (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !shizukuConnected)
+    ) {
+      activeIssuePenalty += 12
+      if (shouldHeal && (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+          shizukuStatus.connectionState == ShizukuConnectionState.NOT_INSTALLED ||
+          shizukuStatus.connectionState == ShizukuConnectionState.NOT_RUNNING ||
+          shizukuStatus.connectionState == ShizukuConnectionState.PERMISSION_REQUIRED)
+      ) {
+        repository.setRootTotalPerformanceEnabled(false)
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "root_perf_guard",
+            title = "Desempenho Total ajustado (Shizuku OFF)",
+            detail = "O modo estava marcado sem Shizuku conectado; a IA desarmou com segurança para evitar travas.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+        notices += "IA ajustou Desempenho Total (Shizuku desconectado)"
+      } else {
+        newAlerts +=
+          GuardianAlert(
+            id = "root_perf_warn",
+            title = "Aviso: Shizuku aguardando conexão",
+            detail = "Conecte ou autorize o Shizuku para manter o Desempenho Total funcionando.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    }
+
+    // 6. RAM Pressure / Travamento Risk
+    val highRamPressure = telemetry.isLowMemory || telemetry.ramPercent >= 84
+    if (highRamPressure) {
+      activeIssuePenalty += 22
+      val cooldownOk = forceManualHeal || (now - lastMemoryHealAtMs >= 25_000L)
+      if (shouldHeal && cooldownOk) {
+        lastMemoryHealAtMs = now
+        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
+        if (shizukuConnected) {
+          shizukuBridge.runGuardianMaintenance(
+            trimMemoryAndCache = true,
+            liftBatterySaver = false,
+            coolThermalLoad = false,
+          )
+        }
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "ram_auto_heal",
+            title = "Anti-Travamento RAM executado (${telemetry.ramPercent}%)",
+            detail =
+              if (shizukuConnected)
+                "IA liberou ${freed} MB locais e encerrou processos ociosos via Shizuku para impedir travamentos."
+              else
+                "IA limpou caches e liberou ${freed} MB de memória diante de uso elevado (${telemetry.ramPercent}%).",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+        notices += "IA Guardião evitou travamento de RAM (${freed} MB)"
+      } else if (!autoRepair) {
+        newAlerts +=
+          GuardianAlert(
+            id = "ram_warn",
+            title = "Aviso: RAM crítica em ${telemetry.ramPercent}%",
+            detail = "Restam ${telemetry.ramAvailMb} MB livres. Risco alto de travamentos nos jogos.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    }
+
+    // 7. Frame Drops / UI Stutter Detection
+    val hasFrameLag =
+      telemetry.avgFrameTimeMs > 23.0f ||
+        (telemetry.liveFps in 1..44 && telemetry.maxDisplayHz >= 60)
+    if (hasFrameLag) {
+      activeIssuePenalty += 15
+      val cooldownOk = forceManualHeal || (now - lastFrameHealAtMs >= 25_000L)
+      if (shouldHeal && cooldownOk) {
+        lastFrameHealAtMs = now
+        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
+        if (shizukuConnected) {
+          shizukuBridge.runGuardianMaintenance(
+            trimMemoryAndCache = true,
+            liftBatterySaver = false,
+            coolThermalLoad = false,
+          )
+        }
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "fps_drop_heal",
+            title = "Queda de FPS detectada (${telemetry.liveFps} FPS)",
+            detail =
+              "Latência de quadro em ${String.format(Locale.US, "%.1f", telemetry.avgFrameTimeMs)}ms. IA estabilizou buffers (${freed} MB limpos).",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+      } else if (!autoRepair) {
+        newAlerts +=
+          GuardianAlert(
+            id = "fps_drop_warn",
+            title = "Aviso: Travamento de quadros (${telemetry.liveFps} FPS)",
+            detail =
+              "Tempo de quadro em ${String.format(Locale.US, "%.1f", telemetry.avgFrameTimeMs)}ms. Toque em Corrigir Agora.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    }
+
+    // 8. Thermal Overload Protection & Warning
+    val overheating =
+      telemetry.batteryTempC >= 41.5f || telemetry.thermalSeverity == BottleneckSeverity.CRITICAL
+    if (overheating) {
+      activeIssuePenalty += 22
+      val extremeHeat = telemetry.batteryTempC >= 43.0f
+      if (shouldHeal && extremeHeat && (settings.ignoreThermalLimit || settings.rootTotalPerformanceEnabled)) {
+        repository.setIgnoreThermalLimit(false)
+        repository.setRootTotalPerformanceEnabled(false)
+        if (shizukuConnected) {
+          shizukuBridge.runGuardianMaintenance(
+            trimMemoryAndCache = false,
+            liftBatterySaver = false,
+            coolThermalLoad = true,
+          )
+        }
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "thermal_protect",
+            title = "Proteção Térmica Acionada (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
+            detail =
+              "Calor extremo detectado! IA desativou o over-boost térmico para evitar queda brusca de FPS e desgaste.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+        notices += "Aviso: IA reduziu carga térmica (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)"
+      } else {
+        newAlerts +=
+          GuardianAlert(
+            id = "thermal_warn",
+            title = "Aviso: Aparelho quente (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
+            detail =
+              "Temperatura alta pode causar throttling nos jogos. Recomenda-se abrir o Cooler Criogênico.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    }
+
+    // 9. Battery Saver Throttling Check
+    if (telemetry.isPowerSaveMode) {
+      activeIssuePenalty += 18
+      if (shouldHeal && settings.boostActive && shizukuConnected) {
+        shizukuBridge.runGuardianMaintenance(
+          trimMemoryAndCache = false,
+          liftBatterySaver = true,
+          coolThermalLoad = false,
+        )
+        totalRepairsCount++
+        newAlerts +=
+          GuardianAlert(
+            id = "power_save_lifted",
+            title = "Economia de bateria suspensa no Boost",
+            detail = "O modo economia estava cortando seus Hz/FPS; a IA suspendeu via Shizuku.",
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+      } else {
+        newAlerts +=
+          GuardianAlert(
+            id = "power_save_warn",
+            title = "Aviso: Economia de Bateria ativa",
+            detail = "A Economia de Bateria do Android limita CPU e reduz a fluidez de 90/120Hz.",
+            severity = GuardianSeverity.WARNING,
+            timestampLabel = timestamp,
+          )
+      }
+    }
+
+    // Update rolling alert feed cleanly (replace matching IDs with freshest, cap at 10)
+    if (newAlerts.isNotEmpty()) {
+      newAlerts.forEach { incoming ->
+        alertHistory.removeAll { it.id == incoming.id }
+        alertHistory.add(0, incoming)
+      }
+      while (alertHistory.size > 10) {
+        alertHistory.removeAt(alertHistory.lastIndex)
+      }
+    } else if (forceManualHeal) {
+      val okAlert =
+        GuardianAlert(
+          id = "manual_clean_ok",
+          title = "Varredura concluída: nenhum bug encontrado",
+          detail =
+            "RAM (${telemetry.ramPercent}%), quadros (${telemetry.liveFps} FPS) e módulos estão estáveis e sem travamentos.",
+          severity = GuardianSeverity.INFO,
+          timestampLabel = timestamp,
+          autoFixed = false,
+        )
+      alertHistory.removeAll { it.id == "manual_clean_ok" }
+      alertHistory.add(0, okAlert)
+      while (alertHistory.size > 10) {
+        alertHistory.removeAt(alertHistory.lastIndex)
+      }
+    }
+
+    val score = (100 - activeIssuePenalty).coerceIn(25, 100)
+    val summary =
+      when {
+        !autoRepair -> "Auto-reparo pausado • Somente avisos manuais ($score%)"
+        newAlerts.any { it.autoFixed } ->
+          "IA corrigiu ${newAlerts.count { it.autoFixed }} problema(s) agora • Saúde $score%"
+        newAlerts.any { it.severity == GuardianSeverity.WARNING } ->
+          "IA detectou ${newAlerts.count { it.severity == GuardianSeverity.WARNING }} aviso(s) ativo(s) • Saúde $score%"
+        else -> "Sistema estável • Anti-travamento e correção automática ativos ($score%)"
+      }
+
+    return GuardianCycleResult(
+      state =
+        GuardianState(
+          autoRepairEnabled = autoRepair,
+          isAnalyzing = false,
+          healthScore = score,
+          statusSummary = summary,
+          totalRepairsCount = totalRepairsCount,
+          lastCheckLabel = "Última checagem: $timestamp",
+          alerts = alertHistory.toList(),
+        ),
+      userNotice = notices.firstOrNull(),
+    )
+  }
+
+  fun dismissAlert(alertId: String, currentState: GuardianState): GuardianState {
+    alertHistory.removeAll { it.id == alertId }
+    return currentState.copy(alerts = alertHistory.toList())
+  }
+
+  fun recordExternalFix(
+    id: String,
+    title: String,
+    detail: String,
+    currentState: GuardianState,
+  ): GuardianState {
+    val ts = timeFormat.format(Date())
+    totalRepairsCount++
+    alertHistory.removeAll { it.id == id }
+    alertHistory.add(
+      0,
+      GuardianAlert(
+        id = id,
+        title = title,
+        detail = detail,
+        severity = GuardianSeverity.FIXED,
+        timestampLabel = ts,
+        autoFixed = true,
+      ),
+    )
+    while (alertHistory.size > 10) {
+      alertHistory.removeAt(alertHistory.lastIndex)
+    }
+    return currentState.copy(
+      healthScore = 100,
+      totalRepairsCount = totalRepairsCount,
+      lastCheckLabel = "Atualizado: $ts",
+      statusSummary = title,
+      alerts = alertHistory.toList(),
+    )
+  }
+}

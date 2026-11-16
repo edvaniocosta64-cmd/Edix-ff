@@ -287,34 +287,46 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     onClearCustomWallpaper = {
                       viewModel.clearCustomWallpaper()
                     },
+                    onToggleGuardianAutoRepair = { enabled ->
+                      viewModel.toggleGuardianAutoRepair(enabled)
+                    },
+                    onRunGuardianHeal = {
+                      viewModel.runGuardianManualHeal()
+                    },
+                    onDismissGuardianAlert = { alertId ->
+                      viewModel.dismissGuardianAlert(alertId)
+                    },
+                    onRestoreEverything = {
+                      viewModel.restoreAllFactoryDefaults(activity)
+                    },
                   )
                 AppTab.MODULES ->
                   ModulesAndResolutionScreen(
                     state = state,
                     onShizukuAction = { viewModel.connectOrApplyShizuku(context) },
-                    onToggleModule = { id, enabled -> viewModel.toggleModule(id, enabled) },
-                    onRestoreAllDefaults = { viewModel.restoreAllFactoryDefaults(activity) },
+                    onToggleRootTotalPerformance = { enable ->
+                      viewModel.setRootTotalPerformance(enable, activity)
+                    },
+                    onImportAxPluginZip = { uri ->
+                      viewModel.importAxPluginZip(uri)
+                    },
+                    onToggleAxOnlyMode = { enabled ->
+                      viewModel.toggleAxOnlyMode(enabled)
+                    },
+                    onToggleAxPlugin = { pluginId, enable ->
+                      viewModel.toggleAxPlugin(pluginId, enable)
+                    },
+                    onRemoveAxPlugin = { pluginId ->
+                      viewModel.removeAxPlugin(pluginId)
+                    },
                     onApplyResolution = { w, h, dpi, lock, pct ->
                       viewModel.applyResolution(w, h, dpi, lock, pct)
                     },
-                    onRestoreNativeResolution = { viewModel.restoreNativeResolution() },
                     onToggleBackgroundPanel = { enable ->
                       viewModel.toggleBackgroundResolutionPanel(enable, context)
                     },
                     onToggleFloatingResolutionOverlay = { enable ->
                       viewModel.toggleFloatingResolutionOverlay(enable, context)
-                    },
-                    onToggleRootTotalPerformance = { enable ->
-                      viewModel.setRootTotalPerformance(enable, activity)
-                    },
-                    onUpdateIphoneTouchConfig = { cfg ->
-                      viewModel.updateIphoneTouchConfig(cfg)
-                    },
-                    onApplyIphoneTouchNow = {
-                      viewModel.applyIphoneTouchModuleNow()
-                    },
-                    onRestoreIphoneTouchDefaults = {
-                      viewModel.restoreIphoneTouchDefaults()
                     },
                   )
                 AppTab.GAMES ->
@@ -340,6 +352,7 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                   DiagnosticsScreen(
                     state = state,
                     onRunScan = { viewModel.runDiagnosticScan() },
+                    onRunGuardianHeal = { viewModel.runGuardianManualHeal() },
                     onDiagnosticAction = { action ->
                       viewModel.executeDiagnosticAction(
                         action = action,

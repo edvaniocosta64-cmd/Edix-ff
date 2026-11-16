@@ -307,6 +307,30 @@ class DeviceTelemetryManager(private val context: Context) {
     }
   }
 
+  fun resetDisplayRefreshRateToDefault(activity: Activity?) {
+    if (activity != null) {
+      try {
+        val window = activity.window
+        window.setSustainedPerformanceMode(false)
+        val params = window.attributes
+        if (params.preferredDisplayModeId != 0 || params.preferredRefreshRate != 0f) {
+          params.preferredDisplayModeId = 0
+          params.preferredRefreshRate = 0f
+          window.attributes = params
+        }
+      } catch (_: Exception) {}
+    }
+    try {
+      if (Settings.System.canWrite(context)) {
+        Settings.System.putString(context.contentResolver, "min_refresh_rate", null)
+        Settings.System.putString(context.contentResolver, "peak_refresh_rate", null)
+        runCatching {
+          Settings.System.putString(context.contentResolver, "user_refresh_rate", null)
+        }
+      }
+    } catch (_: Exception) {}
+  }
+
   private fun probeGpuRenderer(): String {
     return try {
       val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -354,6 +378,30 @@ class DeviceTelemetryManager(private val context: Context) {
     }
     val afterAvail = readAvailRamMb()
     return (afterAvail - beforeAvail).coerceAtLeast(0L)
+  }
+
+  fun cleanupOrphanTempFilesAndHeavyCache(): Pair<Int, Long> {
+    var removedTempCount = 0
+    try {
+      context.filesDir?.listFiles()?.forEach { file ->
+        if (file.isFile && (file.name.endsWith(".tmp") || file.name.endsWith(".bak"))) {
+          if (file.delete()) removedTempCount++
+        }
+      }
+    } catch (_: Exception) {}
+    val cacheBytes =
+      try {
+        context.cacheDir?.walkTopDown()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+      } catch (_: Exception) {
+        0L
+      }
+    val freedMb =
+      if (cacheBytes > 8L * 1024L * 1024L) {
+        performMemoryAndCacheCleanup()
+      } else {
+        0L
+      }
+    return removedTempCount to freedMb
   }
 
   private fun readAvailRamMb(): Long {
