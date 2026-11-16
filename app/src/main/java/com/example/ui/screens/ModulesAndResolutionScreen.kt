@@ -3,15 +3,18 @@ package com.example.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -30,20 +33,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.WebAsset
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -63,6 +71,10 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults.SecondaryIndicator
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -70,23 +82,32 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.ax.AxExtensionManager
+import com.example.ax.AxWebUiActivity
 import com.example.model.AxCompatibilityStatus
 import com.example.model.AxExtensionModule
 import com.example.model.AxPluginType
+import com.example.model.AxToggleableOption
 import com.example.resolution.ResolutionHelper
 import com.example.resolution.ResolutionPopupActivity
 import com.example.shizuku.ShizukuConnectionState
@@ -104,16 +125,16 @@ import com.example.ui.theme.VoidBorder
 import com.example.ui.theme.VoidObsidian
 import com.example.ui.theme.VoidSurfaceElevated
 import com.example.ui.theme.WarningAmber
+import java.io.File
 import kotlin.math.roundToInt
 
 private enum class AxPluginFilter(val label: String) {
   ALL("Todos"),
   AX_ONLY("Só AxManager"),
-  SUPPORTED("Suportados"),
+  WEBUI("Com WebUI"),
   ACTIVE("Ativos"),
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModulesAndResolutionScreen(
   state: BoosterUiState,
@@ -123,6 +144,11 @@ fun ModulesAndResolutionScreen(
   onToggleAxOnlyMode: (Boolean) -> Unit,
   onToggleAxPlugin: (String, Boolean) -> Unit,
   onRemoveAxPlugin: (String) -> Unit,
+  onToggleAxPluginOption: (String, AxToggleableOption, Boolean) -> Unit,
+  onRunAxPluginScript: (String, String) -> Unit,
+  onReadPluginFileText: (AxExtensionModule, String) -> String?,
+  onGetPluginBannerFile: (AxExtensionModule) -> File?,
+  onBuildToggleableOptions: (AxExtensionModule) -> List<AxToggleableOption>,
   onApplyResolution: (Int, Int, Int, Boolean, Int) -> Unit,
   onToggleBackgroundPanel: (Boolean) -> Unit,
   onToggleFloatingResolutionOverlay: (Boolean) -> Unit,
@@ -136,7 +162,9 @@ fun ModulesAndResolutionScreen(
 
   var showRootWarningDialog by remember { mutableStateOf(false) }
   var selectedFilter by remember { mutableStateOf(AxPluginFilter.ALL) }
+  var pluginSearchQuery by remember { mutableStateOf("") }
   var inspectedPluginId by remember { mutableStateOf<String?>(null) }
+  var inspectedInitialTab by remember { mutableIntStateOf(0) }
   var pendingRemovalPlugin by remember { mutableStateOf<AxExtensionModule?>(null) }
 
   var scaleSlider by remember(settings.resolutionScalePercent) {
@@ -171,7 +199,8 @@ fun ModulesAndResolutionScreen(
     }
 
   val filteredPlugins =
-    remember(state.axExtensions, selectedFilter, settings.axOnlyModeEnabled) {
+    remember(state.axExtensions, selectedFilter, settings.axOnlyModeEnabled, pluginSearchQuery) {
+      val q = pluginSearchQuery.trim()
       state.axExtensions.filter { plugin ->
         val matchesOnlyToggle =
           !settings.axOnlyModeEnabled || plugin.pluginType == AxPluginType.AX_MANAGER_PLUGIN
@@ -179,10 +208,15 @@ fun ModulesAndResolutionScreen(
           when (selectedFilter) {
             AxPluginFilter.ALL -> true
             AxPluginFilter.AX_ONLY -> plugin.pluginType == AxPluginType.AX_MANAGER_PLUGIN
-            AxPluginFilter.SUPPORTED -> plugin.isSupportedForActivation
+            AxPluginFilter.WEBUI -> plugin.hasWebUi
             AxPluginFilter.ACTIVE -> plugin.enabled
           }
-        matchesOnlyToggle && matchesChip
+        val matchesQuery =
+          q.isBlank() ||
+            plugin.name.contains(q, ignoreCase = true) ||
+            plugin.author.contains(q, ignoreCase = true) ||
+            plugin.description.contains(q, ignoreCase = true)
+        matchesOnlyToggle && matchesChip && matchesQuery
       }
     }
 
@@ -338,7 +372,7 @@ fun ModulesAndResolutionScreen(
             SectionHeader(
               title = "AX EXTENSION CENTER",
               subtitle =
-                "${state.axExtensions.size} importado(s) • $activeAxCount ativo(s) • ZIP Magisk & AxManager",
+                "${state.axExtensions.size} plugin(s) • $activeAxCount ativo(s) • WebUI + Arquivos + Shizuku",
             )
           }
           Surface(
@@ -418,7 +452,7 @@ fun ModulesAndResolutionScreen(
             )
             Spacer(modifier = Modifier.size(8.dp))
             Text(
-              text = "Conectar / Integrar Shizuku para Executar Módulos",
+              text = "Conectar / Integrar Shizuku para Executar Plugins",
               style = MaterialTheme.typography.labelLarge,
               color = LimitlessCyan,
             )
@@ -506,7 +540,7 @@ fun ModulesAndResolutionScreen(
             )
             Spacer(modifier = Modifier.size(10.dp))
             Text(
-              text = "Analisando arquivos, scripts e compatibilidade...",
+              text = "Analisando arquivos, WebUI e compatibilidade...",
               style = MaterialTheme.typography.labelLarge,
             )
           } else {
@@ -519,7 +553,40 @@ fun ModulesAndResolutionScreen(
           }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        if (state.axExtensions.isNotEmpty()) {
+          Spacer(modifier = Modifier.height(10.dp))
+          OutlinedTextField(
+            value = pluginSearchQuery,
+            onValueChange = { pluginSearchQuery = it },
+            placeholder = { Text("Buscar plugin importado...", color = MutedLavender) },
+            leadingIcon = {
+              Icon(imageVector = Icons.Rounded.Search, contentDescription = null, tint = LimitlessCyan)
+            },
+            trailingIcon = {
+              if (pluginSearchQuery.isNotEmpty()) {
+                IconButton(onClick = { pluginSearchQuery = "" }) {
+                  Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Limpar busca",
+                    tint = MutedLavender,
+                  )
+                }
+              }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors =
+              OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = LimitlessCyan,
+                unfocusedBorderColor = VoidBorder,
+                focusedTextColor = ColdWhite,
+                unfocusedTextColor = ColdWhite,
+              ),
+            modifier = Modifier.fillMaxWidth().testTag("ax_plugin_search_input"),
+          )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Filter Chips
         Row(
@@ -584,9 +651,9 @@ fun ModulesAndResolutionScreen(
             Text(
               text =
                 if (state.axExtensions.isEmpty())
-                  "Todos os módulos fixos antigos foram apagados. Baixe qualquer módulo .zip (Magisk ou plugin AxManager) e importe acima para analisar scripts, dependências, compatibilidade e rodar com Shizuku."
+                  "Todos os módulos fixos antigos foram apagados. Baixe qualquer plugin AxManager (com WebUI/Action) ou módulo Magisk .zip e importe acima para abrir a WebUI, ver os arquivos e ativar as opções via Shizuku."
                 else
-                  "Mude o filtro acima ou desative 'Somente Plugins de AxManager' para ver todos os arquivos importados.",
+                  "Mude o filtro ou a busca acima para ver todos os plugins importados.",
               style = MaterialTheme.typography.bodyMedium,
               color = MutedLavender,
               textAlign = TextAlign.Center,
@@ -596,11 +663,22 @@ fun ModulesAndResolutionScreen(
       }
     } else {
       items(filteredPlugins, key = { it.id }) { plugin ->
+        val bannerFile =
+          remember(plugin.id, plugin.bannerPath) {
+            onGetPluginBannerFile(plugin)
+          }
         AxPluginCard(
           plugin = plugin,
+          bannerFile = bannerFile,
           shizukuConnected = shizukuConnected,
           onToggle = { wantEnable -> onToggleAxPlugin(plugin.id, wantEnable) },
-          onInspect = { inspectedPluginId = plugin.id },
+          onOpenWebUi = {
+            context.startActivity(AxWebUiActivity.createIntent(context, plugin.id))
+          },
+          onOpenFilesAndOptions = { tab ->
+            inspectedInitialTab = tab
+            inspectedPluginId = plugin.id
+          },
           onRequestRemove = { pendingRemovalPlugin = plugin },
           modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
         )
@@ -628,7 +706,6 @@ fun ModulesAndResolutionScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Background 2nd-plan panel toggle
         Row(
           modifier =
             Modifier.fillMaxWidth()
@@ -998,8 +1075,21 @@ fun ModulesAndResolutionScreen(
   if (inspectedPlugin != null) {
     AxPluginInspectorSheet(
       plugin = inspectedPlugin,
+      initialTab = inspectedInitialTab,
       shizukuConnected = shizukuConnected,
-      onToggle = { enable -> onToggleAxPlugin(inspectedPlugin.id, enable) },
+      onTogglePlugin = { enable -> onToggleAxPlugin(inspectedPlugin.id, enable) },
+      onOpenWebUi = {
+        inspectedPluginId = null
+        context.startActivity(AxWebUiActivity.createIntent(context, inspectedPlugin.id))
+      },
+      onToggleOption = { option, enable ->
+        onToggleAxPluginOption(inspectedPlugin.id, option, enable)
+      },
+      onRunScript = { scriptPath ->
+        onRunAxPluginScript(inspectedPlugin.id, scriptPath)
+      },
+      onReadFileText = { path -> onReadPluginFileText(inspectedPlugin, path) },
+      onBuildOptions = { onBuildToggleableOptions(inspectedPlugin) },
       onRequestRemove = { pendingRemovalPlugin = inspectedPlugin },
       onDismiss = { inspectedPluginId = null },
     )
@@ -1009,12 +1099,21 @@ fun ModulesAndResolutionScreen(
 @Composable
 private fun AxPluginCard(
   plugin: AxExtensionModule,
+  bannerFile: File?,
   shizukuConnected: Boolean,
   onToggle: (Boolean) -> Unit,
-  onInspect: () -> Unit,
+  onOpenWebUi: () -> Unit,
+  onOpenFilesAndOptions: (initialTab: Int) -> Unit,
   onRequestRemove: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val bannerBitmap =
+    remember(bannerFile?.absolutePath) {
+      if (bannerFile != null && bannerFile.exists()) {
+        runCatching { BitmapFactory.decodeFile(bannerFile.absolutePath)?.asImageBitmap() }.getOrNull()
+      } else null
+    }
+
   val compatColor =
     when (plugin.compatibility) {
       AxCompatibilityStatus.COMPATIBLE -> NeonSuccess
@@ -1022,177 +1121,265 @@ private fun AxPluginCard(
       AxCompatibilityStatus.ROOT_REQUIRED -> WarningAmber
       AxCompatibilityStatus.INCOMPATIBLE -> ReversalRed
     }
-  val typeColor =
-    when (plugin.pluginType) {
-      AxPluginType.AX_MANAGER_PLUGIN -> LimitlessCyan
-      AxPluginType.MAGISK_SHIZUKU_COMPAT -> HollowPurpleBright
-      AxPluginType.MAGISK_ROOT_ONLY -> WarningAmber
-      AxPluginType.UNSUPPORTED -> ReversalRed
-    }
 
-  VoidGlassCard(
+  Surface(
     modifier = modifier.testTag("ax_plugin_card_${plugin.id}"),
-    borderColor = if (plugin.enabled) LimitlessCyan else compatColor.copy(alpha = 0.55f),
+    shape = RoundedCornerShape(22.dp),
+    color = VoidSurfaceElevated,
+    border =
+      BorderStroke(
+        width = if (plugin.enabled) 1.5.dp else 1.dp,
+        color = if (plugin.enabled) LimitlessCyan else compatColor.copy(alpha = 0.5f),
+      ),
   ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = plugin.name,
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.SemiBold,
-          color = ColdWhite,
+    Box(modifier = Modifier.fillMaxWidth()) {
+      if (bannerBitmap != null) {
+        Image(
+          bitmap = bannerBitmap,
+          contentDescription = null,
+          contentScale = ContentScale.Crop,
+          alpha = 0.34f,
+          modifier = Modifier.matchParentSize(),
         )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-          text = "v${plugin.version} • por ${plugin.author} • ${plugin.sourceZipName}",
-          style = MaterialTheme.typography.labelSmall,
-          color = MutedLavender,
-        )
-      }
-
-      Switch(
-        checked = plugin.enabled,
-        enabled = plugin.isSupportedForActivation || plugin.enabled,
-        onCheckedChange = onToggle,
-        modifier = Modifier.testTag("ax_plugin_switch_${plugin.id}"),
-        colors =
-          SwitchDefaults.colors(
-            checkedThumbColor = VoidObsidian,
-            checkedTrackColor = LimitlessCyan,
-            uncheckedThumbColor = MutedLavender,
-            uncheckedTrackColor = VoidObsidian,
-          ),
-      )
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    Row(
-      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-      Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = typeColor.copy(alpha = 0.16f),
-        border = BorderStroke(1.dp, typeColor.copy(alpha = 0.45f)),
-      ) {
-        Text(
-          text = plugin.pluginType.label,
-          style = MaterialTheme.typography.labelSmall,
-          color = typeColor,
-          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        Box(
+          modifier =
+            Modifier.matchParentSize()
+              .background(
+                Brush.verticalGradient(
+                  colors =
+                    listOf(
+                      VoidObsidian.copy(alpha = 0.72f),
+                      VoidObsidian.copy(alpha = 0.90f),
+                    ),
+                )
+              ),
         )
       }
-      Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = compatColor.copy(alpha = 0.16f),
-        border = BorderStroke(1.dp, compatColor.copy(alpha = 0.45f)),
-      ) {
+
+      Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        // Top Tags Row (Size + WEBUI + ACTION + Compat) + Master Switch
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.Top,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Row(
+              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = VoidObsidian.copy(alpha = 0.85f),
+                border = BorderStroke(1.dp, VoidBorder),
+              ) {
+                Text(
+                  text = AxExtensionManager.formatSize(plugin.zipSizeBytes),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = ColdWhite,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+              }
+
+              if (plugin.hasWebUi) {
+                Surface(
+                  shape = RoundedCornerShape(8.dp),
+                  color = LimitlessCyan.copy(alpha = 0.22f),
+                  border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.65f)),
+                ) {
+                  Text(
+                    text = "WEBUI",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = LimitlessCyan,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                  )
+                }
+              }
+
+              if (plugin.hasActionSh) {
+                Surface(
+                  shape = RoundedCornerShape(8.dp),
+                  color = HollowPurple.copy(alpha = 0.35f),
+                  border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.65f)),
+                ) {
+                  Text(
+                    text = "ACTION",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = ColdWhite,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                  )
+                }
+              }
+
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = compatColor.copy(alpha = 0.18f),
+                border = BorderStroke(1.dp, compatColor.copy(alpha = 0.55f)),
+              ) {
+                Text(
+                  text = plugin.compatibility.label,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = compatColor,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+              }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+              text = plugin.name,
+              style = MaterialTheme.typography.titleLarge,
+              fontWeight = FontWeight.Bold,
+              color = ColdWhite,
+            )
+            Text(
+              text = "Versão: v${plugin.version} • Autor: ${plugin.author}",
+              style = MaterialTheme.typography.labelMedium,
+              color = MutedLavender,
+            )
+          }
+
+          Switch(
+            checked = plugin.enabled,
+            enabled = plugin.isSupportedForActivation || plugin.enabled,
+            onCheckedChange = onToggle,
+            modifier = Modifier.testTag("ax_plugin_switch_${plugin.id}"),
+            colors =
+              SwitchDefaults.colors(
+                checkedThumbColor = VoidObsidian,
+                checkedTrackColor = LimitlessCyan,
+                uncheckedThumbColor = MutedLavender,
+                uncheckedTrackColor = VoidObsidian,
+              ),
+          )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
-          text = plugin.compatibility.label,
+          text = plugin.description,
+          style = MaterialTheme.typography.bodyMedium,
+          color = ColdWhite.copy(alpha = 0.9f),
+          maxLines = 4,
+          overflow = TextOverflow.Ellipsis,
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+          text =
+            "${plugin.pluginType.label} • ${plugin.totalFilesCount} arquivos • ${plugin.activeOptionKeys.size} opção(ões) ativada(s) manualmente",
           style = MaterialTheme.typography.labelSmall,
           color = compatColor,
-          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
         )
-      }
-      Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = VoidSurfaceElevated,
-        border = BorderStroke(1.dp, VoidBorder),
-      ) {
-        Text(
-          text = "${plugin.totalFilesCount} arq • ${plugin.scriptFiles.size} scripts • ${plugin.applyCommands.size} cmds",
-          style = MaterialTheme.typography.labelSmall,
-          color = ColdWhite,
-          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
-      }
-    }
 
-    Spacer(modifier = Modifier.height(8.dp))
-    Text(
-      text = plugin.description,
-      style = MaterialTheme.typography.bodyMedium,
-      color = MutedLavender,
-    )
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-      text = plugin.compatibilityReason,
-      style = MaterialTheme.typography.labelSmall,
-      color = compatColor,
-    )
+        if (plugin.requiresShizuku && !shizukuConnected) {
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "Shizuku offline: conecte para executar opções e ações no sistema.",
+            style = MaterialTheme.typography.labelSmall,
+            color = WarningAmber,
+          )
+        }
 
-    if (plugin.requiresShizuku && !shizukuConnected && plugin.applyCommands.isNotEmpty()) {
-      Spacer(modifier = Modifier.height(6.dp))
-      Text(
-        text = "Shizuku desconectado: conecte para executar os ${plugin.applyCommands.size} comando(s) deste plugin.",
-        style = MaterialTheme.typography.labelSmall,
-        color = WarningAmber,
-      )
-    }
+        if (plugin.lastExecutionLog.isNotBlank()) {
+          Spacer(modifier = Modifier.height(8.dp))
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            color = VoidObsidian.copy(alpha = 0.85f),
+            border = BorderStroke(1.dp, VoidBorder),
+          ) {
+            Text(
+              text = "> ${plugin.lastExecutionLog}",
+              style = MaterialTheme.typography.labelSmall,
+              fontFamily = FontFamily.Monospace,
+              color = if (plugin.enabled) NeonSuccess else LimitlessCyan,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
 
-    if (plugin.lastExecutionLog.isNotBlank()) {
-      Spacer(modifier = Modifier.height(8.dp))
-      Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = VoidObsidian.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, VoidBorder),
-      ) {
-        Text(
-          text = "> ${plugin.lastExecutionLog}",
-          style = MaterialTheme.typography.labelSmall,
-          fontFamily = FontFamily.Monospace,
-          color = if (plugin.enabled) NeonSuccess else LimitlessCyan,
-          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-      }
-    }
+        Spacer(modifier = Modifier.height(12.dp))
 
-    Spacer(modifier = Modifier.height(10.dp))
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      OutlinedButton(
-        onClick = onInspect,
-        modifier =
-          Modifier.weight(1f)
-            .minimumInteractiveComponentSize()
-            .testTag("ax_plugin_inspect_${plugin.id}"),
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.7f)),
-      ) {
-        Icon(
-          imageVector = Icons.Rounded.Code,
-          contentDescription = null,
-          tint = LimitlessCyan,
-          modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.size(6.dp))
-        Text(
-          text = "Analisar Scripts & Dependências",
-          style = MaterialTheme.typography.labelMedium,
-          color = ColdWhite,
-        )
-      }
+        // Action Bar like Screenshot 1: [ >_ Opções / Arquivos ] [ WebUI ] [ Trash ]
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          OutlinedButton(
+            onClick = { onOpenFilesAndOptions(0) },
+            modifier =
+              Modifier.weight(1f)
+                .height(48.dp)
+                .testTag("ax_plugin_options_${plugin.id}"),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.75f)),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Terminal,
+              contentDescription = null,
+              tint = LimitlessCyan,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text(
+              text = "Opções & Arquivos",
+              style = MaterialTheme.typography.labelMedium,
+              color = ColdWhite,
+              maxLines = 1,
+            )
+          }
 
-      IconButton(
-        onClick = onRequestRemove,
-        modifier =
-          Modifier.minimumInteractiveComponentSize()
-            .testTag("ax_plugin_remove_${plugin.id}"),
-      ) {
-        Icon(
-          imageVector = Icons.Rounded.DeleteOutline,
-          contentDescription = "Remover plugin ${plugin.name}",
-          tint = ReversalRed,
-        )
+          if (plugin.hasWebUi) {
+            Button(
+              onClick = onOpenWebUi,
+              modifier =
+                Modifier.weight(0.9f)
+                  .height(48.dp)
+                  .testTag("ax_plugin_webui_${plugin.id}"),
+              shape = RoundedCornerShape(14.dp),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = LimitlessCyan,
+                  contentColor = VoidObsidian,
+                ),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.WebAsset,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(modifier = Modifier.size(6.dp))
+              Text(
+                text = "WebUI",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+              )
+            }
+          }
+
+          Surface(
+            onClick = onRequestRemove,
+            shape = RoundedCornerShape(14.dp),
+            color = ReversalRed.copy(alpha = 0.16f),
+            border = BorderStroke(1.dp, ReversalRed.copy(alpha = 0.5f)),
+            modifier =
+              Modifier.size(48.dp)
+                .testTag("ax_plugin_remove_${plugin.id}"),
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Rounded.DeleteOutline,
+                contentDescription = "Remover plugin ${plugin.name}",
+                tint = ReversalRed,
+              )
+            }
+          }
+        }
       }
     }
   }
@@ -1202,12 +1389,26 @@ private fun AxPluginCard(
 @Composable
 private fun AxPluginInspectorSheet(
   plugin: AxExtensionModule,
+  initialTab: Int,
   shizukuConnected: Boolean,
-  onToggle: (Boolean) -> Unit,
+  onTogglePlugin: (Boolean) -> Unit,
+  onOpenWebUi: () -> Unit,
+  onToggleOption: (AxToggleableOption, Boolean) -> Unit,
+  onRunScript: (String) -> Unit,
+  onReadFileText: (String) -> String?,
+  onBuildOptions: () -> List<AxToggleableOption>,
   onRequestRemove: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  var selectedTab by remember(plugin.id, initialTab) { mutableIntStateOf(initialTab) }
+  var viewingFilePath by remember(plugin.id) { mutableStateOf<String?>(null) }
+
+  val toggleableOptions =
+    remember(plugin.id, plugin.applyCommands, plugin.propOverrides) {
+      onBuildOptions()
+    }
+
   val compatColor =
     when (plugin.compatibility) {
       AxCompatibilityStatus.COMPATIBLE -> NeonSuccess
@@ -1225,213 +1426,438 @@ private fun AxPluginInspectorSheet(
     Column(
       modifier =
         Modifier.fillMaxWidth()
-          .verticalScroll(rememberScrollState())
-          .padding(horizontal = 20.dp, vertical = 8.dp),
-      verticalArrangement = Arrangement.spacedBy(12.dp),
+          .padding(horizontal = 18.dp, vertical = 4.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      Text(
-        text = plugin.name,
-        style = MaterialTheme.typography.headlineSmall,
-        color = ColdWhite,
-        fontWeight = FontWeight.Bold,
-      )
-      Text(
-        text = "ID: ${plugin.id} • v${plugin.version} (${plugin.versionCode}) • ${plugin.sourceZipName}",
-        style = MaterialTheme.typography.labelMedium,
-        color = LimitlessCyan,
-      )
-      Text(
-        text = plugin.description,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MutedLavender,
-      )
-
-      // Compatibility Card
-      Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = VoidObsidian.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, compatColor.copy(alpha = 0.6f)),
-      ) {
-        Column(
-          modifier = Modifier.padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-          Text(
-            text = "Compatibilidade: ${plugin.compatibility.label}",
-            style = MaterialTheme.typography.titleSmall,
-            color = compatColor,
-          )
-          Text(
-            text = "Android: ${plugin.androidCompatLabel}",
-            style = MaterialTheme.typography.labelMedium,
-            color = ColdWhite,
-          )
-          Text(
-            text = "Aparelho: ${plugin.deviceCompatLabel}",
-            style = MaterialTheme.typography.labelMedium,
-            color = ColdWhite,
-          )
-          Text(
-            text = plugin.compatibilityReason,
-            style = MaterialTheme.typography.bodySmall,
-            color = MutedLavender,
-          )
-        }
-      }
-
-      // Dependencies Checklist
-      Text(
-        text = "Dependências Verificadas (${plugin.dependencies.size})",
-        style = MaterialTheme.typography.titleMedium,
-        color = ColdWhite,
-      )
-      plugin.dependencies.forEach { dep ->
-        Surface(
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(12.dp),
-          color = VoidObsidian.copy(alpha = 0.72f),
-          border =
-            BorderStroke(
-              1.dp,
-              if (dep.satisfied) NeonSuccess.copy(alpha = 0.45f) else WarningAmber.copy(alpha = 0.5f),
-            ),
-        ) {
-          Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-          ) {
-            Icon(
-              imageVector =
-                if (dep.satisfied) Icons.Rounded.CheckCircle else Icons.Rounded.WarningAmber,
-              contentDescription = null,
-              tint = if (dep.satisfied) NeonSuccess else WarningAmber,
-              modifier = Modifier.size(20.dp),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-              Text(dep.name, style = MaterialTheme.typography.labelLarge, color = ColdWhite)
-              Text(dep.detail, style = MaterialTheme.typography.bodySmall, color = MutedLavender)
-            }
-          }
-        }
-      }
-
-      // system.prop overrides
-      if (plugin.propOverrides.isNotEmpty()) {
-        Text(
-          text = "Propriedades system.prop (${plugin.propOverrides.size})",
-          style = MaterialTheme.typography.titleMedium,
-          color = ColdWhite,
-        )
-        Surface(
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(12.dp),
-          color = VoidObsidian,
-          border = BorderStroke(1.dp, VoidBorder),
-        ) {
-          Text(
-            text = plugin.propOverrides.joinToString("\n") { (k, v) -> "$k=$v" },
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = LimitlessCyan,
-            modifier = Modifier.padding(10.dp),
-          )
-        }
-      }
-
-      // Analyzed Scripts
-      Text(
-        text = "Scripts & Arquivos Analisados (${plugin.scriptFiles.size})",
-        style = MaterialTheme.typography.titleMedium,
-        color = ColdWhite,
-      )
-      if (plugin.scriptFiles.isEmpty()) {
-        Text(
-          text = "Nenhum script .sh detectado dentro deste pacote.",
-          style = MaterialTheme.typography.bodySmall,
-          color = MutedLavender,
-        )
-      } else {
-        plugin.scriptFiles.forEach { script ->
-          Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            color = VoidObsidian,
-            border = BorderStroke(1.dp, VoidBorder),
-          ) {
-            Column(
-              modifier = Modifier.padding(10.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Text(
-                  text = script.path,
-                  style = MaterialTheme.typography.labelLarge,
-                  color = LimitlessCyan,
-                )
-                Text(
-                  text = "${script.executableCommandsCount} cmds",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = HollowPurpleBright,
-                )
-              }
-              Text(
-                text = script.summary,
-                style = MaterialTheme.typography.labelSmall,
-                color = MutedLavender,
-              )
-              if (script.contentPreview.isNotBlank()) {
-                Text(
-                  text = script.contentPreview,
-                  style = MaterialTheme.typography.labelSmall,
-                  fontFamily = FontFamily.Monospace,
-                  color = ColdWhite.copy(alpha = 0.88f),
-                  modifier =
-                    Modifier.fillMaxWidth()
-                      .heightIn(max = 160.dp)
-                      .verticalScroll(rememberScrollState()),
-                )
-              }
-            }
-          }
-        }
-      }
-
-      // Executable commands preview
-      if (plugin.applyCommands.isNotEmpty()) {
-        Text(
-          text = "Comandos Integrados ao Shizuku (${plugin.applyCommands.size})",
-          style = MaterialTheme.typography.titleMedium,
-          color = ColdWhite,
-        )
-        Surface(
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(12.dp),
-          color = VoidObsidian,
-          border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.4f)),
-        ) {
-          Text(
-            text = plugin.applyCommands.joinToString("\n"),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = NeonSuccess,
-            modifier = Modifier.padding(10.dp),
-          )
-        }
-      }
-
-      // Actions
       Row(
         modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = plugin.name,
+            style = MaterialTheme.typography.titleLarge,
+            color = ColdWhite,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text = "v${plugin.version} • ${plugin.sourceZipName} • ${AxExtensionManager.formatSize(plugin.zipSizeBytes)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = LimitlessCyan,
+          )
+        }
+        if (plugin.hasWebUi) {
+          Button(
+            onClick = onOpenWebUi,
+            shape = RoundedCornerShape(12.dp),
+            colors =
+              ButtonDefaults.buttonColors(
+                containerColor = LimitlessCyan,
+                contentColor = VoidObsidian,
+              ),
+            modifier = Modifier.height(44.dp).testTag("ax_sheet_open_webui"),
+          ) {
+            Icon(imageVector = Icons.Rounded.WebAsset, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.size(6.dp))
+            Text("Abrir WebUI", style = MaterialTheme.typography.labelLarge)
+          }
+        }
+      }
+
+      TabRow(
+        selectedTabIndex = selectedTab,
+        containerColor = Color.Transparent,
+        contentColor = LimitlessCyan,
+        indicator = { tabPositions ->
+          SecondaryIndicator(
+            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+            color = LimitlessCyan,
+          )
+        },
+      ) {
+        Tab(
+          selected = selectedTab == 0,
+          onClick = { selectedTab = 0; viewingFilePath = null },
+          text = { Text("Opções (${toggleableOptions.size})", style = MaterialTheme.typography.labelMedium) },
+        )
+        Tab(
+          selected = selectedTab == 1,
+          onClick = { selectedTab = 1 },
+          text = { Text("Arquivos (${plugin.allFiles.size})", style = MaterialTheme.typography.labelMedium) },
+        )
+        Tab(
+          selected = selectedTab == 2,
+          onClick = { selectedTab = 2; viewingFilePath = null },
+          text = { Text("Compat.", style = MaterialTheme.typography.labelMedium) },
+        )
+      }
+
+      Column(
+        modifier =
+          Modifier.fillMaxWidth()
+            .heightIn(min = 260.dp, max = 460.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        when (selectedTab) {
+          0 -> {
+            // Opções dentro dos arquivos + scripts executáveis (action.sh / service.sh)
+            val quickScripts =
+              plugin.allFiles.filter {
+                it.path.equals("action.sh", true) ||
+                  it.path.equals("service.sh", true) ||
+                  it.path.equals("post-fs-data.sh", true)
+              }
+            if (quickScripts.isNotEmpty()) {
+              Text(
+                text = "Executar Scripts do Módulo via Shizuku",
+                style = MaterialTheme.typography.titleSmall,
+                color = ColdWhite,
+              )
+              Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                quickScripts.forEach { script ->
+                  Button(
+                    onClick = { onRunScript(script.path) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors =
+                      ButtonDefaults.buttonColors(
+                        containerColor =
+                          if (script.path.equals("action.sh", true)) HollowPurple
+                          else VoidObsidian,
+                        contentColor = ColdWhite,
+                      ),
+                    modifier = Modifier.height(44.dp).testTag("ax_run_script_${script.path}"),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Rounded.PlayArrow,
+                      contentDescription = null,
+                      tint = LimitlessCyan,
+                      modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Rodar ${script.path}", style = MaterialTheme.typography.labelMedium)
+                  }
+                }
+              }
+            }
+
+            if (plugin.hasWebUi) {
+              Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = LimitlessCyan.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.45f)),
+              ) {
+                Row(
+                  modifier = Modifier.padding(12.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                  Icon(imageVector = Icons.Rounded.WebAsset, contentDescription = null, tint = LimitlessCyan)
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = "Painel Interativo WebUI Disponível",
+                      style = MaterialTheme.typography.labelLarge,
+                      color = ColdWhite,
+                    )
+                    Text(
+                      text = "Este plugin possui interface HTML própria (${plugin.webUiEntryPath}). Toque em 'Abrir WebUI' acima para ativar todas as funções visuais.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MutedLavender,
+                    )
+                  }
+                }
+              }
+            }
+
+            Text(
+              text = "Opções Extraídas dos Arquivos (${toggleableOptions.size})",
+              style = MaterialTheme.typography.titleSmall,
+              color = ColdWhite,
+            )
+
+            if (toggleableOptions.isEmpty()) {
+              Text(
+                text =
+                  if (plugin.hasWebUi)
+                    "As funções deste plugin são controladas diretamente pela WebUI interativa acima ou via scripts na aba Arquivos."
+                  else
+                    "Nenhuma chave system.prop ou comando de sistema individual foi detectado automaticamente; explore a aba Arquivos.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MutedLavender,
+              )
+            } else {
+              toggleableOptions.forEach { option ->
+                val isChecked = option.key in plugin.activeOptionKeys
+                Surface(
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = RoundedCornerShape(12.dp),
+                  color = VoidObsidian.copy(alpha = 0.85f),
+                  border =
+                    BorderStroke(
+                      1.dp,
+                      if (isChecked) LimitlessCyan.copy(alpha = 0.65f) else VoidBorder,
+                    ),
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                  ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = option.category,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LimitlessCyan,
+                      )
+                      Text(
+                        text = option.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ColdWhite,
+                      )
+                      Text(
+                        text = option.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MutedLavender,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                    Switch(
+                      checked = isChecked,
+                      onCheckedChange = { want -> onToggleOption(option, want) },
+                      modifier = Modifier.testTag("ax_option_switch_${option.key}"),
+                      colors =
+                        SwitchDefaults.colors(
+                          checkedThumbColor = VoidObsidian,
+                          checkedTrackColor = LimitlessCyan,
+                          uncheckedThumbColor = MutedLavender,
+                          uncheckedTrackColor = VoidSurfaceElevated,
+                        ),
+                    )
+                  }
+                }
+              }
+            }
+          }
+
+          1 -> {
+            // Ver dentro dos arquivos do ZIP!
+            val activeFile = viewingFilePath
+            if (activeFile != null) {
+              val content =
+                remember(plugin.id, activeFile) {
+                  onReadFileText(activeFile)
+                    ?: "Arquivo binário ou não legível como texto."
+                }
+              val isScript = activeFile.endsWith(".sh", ignoreCase = true)
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                OutlinedButton(
+                  onClick = { viewingFilePath = null },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, VoidBorder),
+                  modifier = Modifier.height(40.dp),
+                ) {
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                    contentDescription = "Voltar para lista de arquivos",
+                    tint = LimitlessCyan,
+                    modifier = Modifier.size(16.dp),
+                  )
+                  Spacer(modifier = Modifier.size(4.dp))
+                  Text("Voltar", color = ColdWhite, style = MaterialTheme.typography.labelMedium)
+                }
+
+                if (isScript) {
+                  Button(
+                    onClick = { onRunScript(activeFile) },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = HollowPurple),
+                    modifier = Modifier.height(40.dp),
+                  ) {
+                    Icon(imageVector = Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Executar .sh", color = ColdWhite, style = MaterialTheme.typography.labelMedium)
+                  }
+                }
+              }
+
+              Text(
+                text = activeFile,
+                style = MaterialTheme.typography.labelLarge,
+                color = LimitlessCyan,
+              )
+
+              Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = VoidObsidian,
+                border = BorderStroke(1.dp, VoidBorder),
+              ) {
+                Text(
+                  text = content,
+                  style = MaterialTheme.typography.labelSmall,
+                  fontFamily = FontFamily.Monospace,
+                  color = ColdWhite.copy(alpha = 0.92f),
+                  modifier = Modifier.padding(12.dp),
+                )
+              }
+            } else {
+              Text(
+                text = "Toque em qualquer arquivo abaixo para abrir o conteúdo:",
+                style = MaterialTheme.typography.labelMedium,
+                color = MutedLavender,
+              )
+              plugin.allFiles.forEach { fileEntry ->
+                Surface(
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .clip(RoundedCornerShape(12.dp))
+                      .clickable(enabled = fileEntry.isTextReadable) {
+                        viewingFilePath = fileEntry.path
+                      }
+                      .testTag("ax_file_item_${fileEntry.path}"),
+                  shape = RoundedCornerShape(12.dp),
+                  color = VoidObsidian.copy(alpha = 0.85f),
+                  border = BorderStroke(1.dp, VoidBorder),
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                  ) {
+                    Icon(
+                      imageVector =
+                        if (fileEntry.isScript) Icons.Rounded.Terminal
+                        else Icons.Rounded.Description,
+                      contentDescription = null,
+                      tint = if (fileEntry.isScript) LimitlessCyan else HollowPurpleBright,
+                      modifier = Modifier.size(20.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = fileEntry.path,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ColdWhite,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                      Text(
+                        text =
+                          "${AxExtensionManager.formatSize(fileEntry.sizeBytes)} • " +
+                            if (fileEntry.isTextReadable) "Toque para ver conteúdo" else "Arquivo binário/recurso",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (fileEntry.isTextReadable) LimitlessCyan else MutedLavender,
+                      )
+                    }
+                    if (fileEntry.isScript) {
+                      IconButton(
+                        onClick = { onRunScript(fileEntry.path) },
+                        modifier = Modifier.minimumInteractiveComponentSize(),
+                      ) {
+                        Icon(
+                          imageVector = Icons.Rounded.PlayArrow,
+                          contentDescription = "Executar ${fileEntry.path}",
+                          tint = NeonSuccess,
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          2 -> {
+            // Compatibilidade & Dependências
+            Surface(
+              modifier = Modifier.fillMaxWidth(),
+              shape = RoundedCornerShape(14.dp),
+              color = VoidObsidian.copy(alpha = 0.85f),
+              border = BorderStroke(1.dp, compatColor.copy(alpha = 0.6f)),
+            ) {
+              Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Text(
+                  text = "Compatibilidade: ${plugin.compatibility.label}",
+                  style = MaterialTheme.typography.titleSmall,
+                  color = compatColor,
+                )
+                Text(
+                  text = "Android: ${plugin.androidCompatLabel}",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = ColdWhite,
+                )
+                Text(
+                  text = "Aparelho: ${plugin.deviceCompatLabel}",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = ColdWhite,
+                )
+                Text(
+                  text = plugin.compatibilityReason,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MutedLavender,
+                )
+              }
+            }
+
+            Text(
+              text = "Dependências Verificadas (${plugin.dependencies.size})",
+              style = MaterialTheme.typography.titleSmall,
+              color = ColdWhite,
+            )
+            plugin.dependencies.forEach { dep ->
+              Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = VoidObsidian.copy(alpha = 0.72f),
+                border =
+                  BorderStroke(
+                    1.dp,
+                    if (dep.satisfied) NeonSuccess.copy(alpha = 0.45f) else WarningAmber.copy(alpha = 0.5f),
+                  ),
+              ) {
+                Row(
+                  modifier = Modifier.padding(10.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                  Icon(
+                    imageVector =
+                      if (dep.satisfied) Icons.Rounded.CheckCircle else Icons.Rounded.WarningAmber,
+                    contentDescription = null,
+                    tint = if (dep.satisfied) NeonSuccess else WarningAmber,
+                    modifier = Modifier.size(20.dp),
+                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(dep.name, style = MaterialTheme.typography.labelLarge, color = ColdWhite)
+                    Text(dep.detail, style = MaterialTheme.typography.bodySmall, color = MutedLavender)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Bottom Footer Actions
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
       ) {
         Button(
-          onClick = { onToggle(!plugin.enabled) },
+          onClick = { onTogglePlugin(!plugin.enabled) },
           enabled = plugin.isSupportedForActivation || plugin.enabled,
           modifier = Modifier.weight(1f).height(48.dp).testTag("ax_sheet_toggle_button"),
           shape = RoundedCornerShape(12.dp),
@@ -1447,7 +1873,7 @@ private fun AxPluginInspectorSheet(
                 plugin.enabled -> "Desativar Plugin"
                 !plugin.isSupportedForActivation -> "Não Suportado"
                 plugin.requiresShizuku && !shizukuConnected -> "Ativar (Shizuku)"
-                else -> "Ativar Plugin"
+                else -> "Ativar Tudo do Plugin"
               },
             style = MaterialTheme.typography.labelLarge,
           )
@@ -1462,8 +1888,6 @@ private fun AxPluginInspectorSheet(
           Text("Remover", color = ReversalRed, style = MaterialTheme.typography.labelLarge)
         }
       }
-
-      Spacer(modifier = Modifier.height(18.dp))
     }
   }
 }

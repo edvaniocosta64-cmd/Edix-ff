@@ -527,6 +527,133 @@ class ShizukuBridge(private val context: Context) {
       true to summary
     }
 
+  suspend fun runRawPluginCommand(
+    command: String,
+    moduleId: String? = null,
+  ): Triple<Int, String, String> =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(1200L)
+        ?: return@withContext Triple(127, "", "Shizuku desconectado. Conecte o Shizuku para executar comandos.")
+      val safeId =
+        (moduleId ?: "default").lowercase(Locale.US).replace(Regex("[^a-z0-9._-]"), "_")
+      val modDir = "/data/local/tmp/infinit_ax/$safeId"
+      val normalizedCmd =
+        command
+          .replace("/data/adb/modules/$safeId", modDir)
+          .replace("/data/adb/ax/modules/$safeId", modDir)
+          .replace("/data/adb/modules_update/$safeId", modDir)
+      val wrapped =
+        "mkdir -p '$modDir' 2>/dev/null; export MODDIR='$modDir'; export MODPATH='$modDir'; export AX_MODULE_DIR='$modDir'; cd '$modDir' 2>/dev/null || true; $normalizedCmd"
+      val raw =
+        try {
+          service.runShellCommand(wrapped)
+        } catch (e: Exception) {
+          return@withContext Triple(1, "", e.message ?: "Erro ao executar no Shizuku")
+        }
+      parseShellServiceOutput(raw)
+    }
+
+  suspend fun syncPluginWorkspaceToTmp(
+    module: AxExtensionModule,
+    pluginDir: java.io.File,
+  ): Boolean =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(1000L) ?: return@withContext false
+      val safeId = module.id.lowercase(Locale.US).replace(Regex("[^a-z0-9._-]"), "_")
+      val modDir = "/data/local/tmp/infinit_ax/$safeId"
+      runSafe(service, "mkdir -p '$modDir'")
+      module.allFiles
+        .filter { it.isTextReadable && it.sizeBytes in 1L..(128 * 1024L) }
+        .take(30)
+        .forEach { entry ->
+          val src = java.io.File(pluginDir, entry.path)
+          if (src.exists() && src.isFile) {
+            val cleanRel = entry.path.replace("'", "")
+            val parentRel = cleanRel.substringBeforeLast("/", "")
+            val b64 =
+              android.util.Base64.encodeToString(
+                src.readBytes(),
+                android.util.Base64.NO_WRAP,
+              )
+            val mkdirPart =
+              if (parentRel.isNotBlank()) "mkdir -p '$modDir/$parentRel'; " else ""
+            runSafe(service, "${mkdirPart}echo '$b64' | base64 -d > '$modDir/$cleanRel' && chmod +x '$modDir/$cleanRel' 2>/dev/null || true")
+          }
+        }
+      true
+    }
+
+  suspend fun executeSinglePluginOption(
+    enableCmd: String,
+    disableCmd: String,
+    enable: Boolean,
+    optionTitle: String,
+  ): Pair<Boolean, String> =
+    withContext(Dispatchers.IO) {
+      val cmd = if (enable) enableCmd else disableCmd
+      if (cmd.isBlank()) {
+        val msg =
+          if (enable) "Opção '$optionTitle' marcada ativa."
+          else "Opção '$optionTitle' desmarcada (sem comando de reversão no script)."
+        return@withContext (true to msg)
+      }
+      val service = ensureBound()
+        ?: return@withContext (false to "Conecte e autorize o Shizuku para alterar '$optionTitle'.")
+      val (code, stdout, stderr) = parseShellServiceOutput(
+        try {
+          service.runShellCommand(cmd)
+        } catch (e: Exception) {
+          "error=${e.message ?: "erro"}"
+        }
+      )
+      val outText = stdout.ifBlank { stderr }.ifBlank { "exit=$code" }.take(90)
+      val verb = if (enable) "ATIVADO" else "DESATIVADO"
+      val summary = "[$verb] $optionTitle → $outText"
+      _status.update { it.copy(lastCommandSummary = summary) }
+      (code == 0 || outText.isNotBlank()) to summary
+    }
+
+  suspend fun executePluginScriptText(
+    module: AxExtensionModule,
+    scriptPath: String,
+    scriptText: String,
+  ): Triple<Int, String, String> =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(1200L)
+        ?: return@withContext Triple(127, "", "Conecte e autorize o Shizuku para rodar $scriptPath.")
+      val safeId = module.id.lowercase(Locale.US).replace(Regex("[^a-z0-9._-]"), "_")
+      val modDir = "/data/local/tmp/infinit_ax/$safeId"
+      val b64 =
+        android.util.Base64.encodeToString(
+          scriptText.toByteArray(Charsets.UTF_8),
+          android.util.Base64.NO_WRAP,
+        )
+      val safeName = scriptPath.substringAfterLast("/").replace(Regex("[^a-zA-Z0-9._-]"), "_")
+      val cmd =
+        "mkdir -p '$modDir'; export MODDIR='$modDir'; export MODPATH='$modDir'; cd '$modDir'; " +
+          "echo '$b64' | base64 -d > '$modDir/$safeName' && chmod 755 '$modDir/$safeName' && sh '$modDir/$safeName'"
+      val raw =
+        try {
+          service.runShellCommand(cmd)
+        } catch (e: Exception) {
+          return@withContext Triple(1, "", e.message ?: "Erro ao executar $scriptPath")
+        }
+      parseShellServiceOutput(raw)
+    }
+
+  private fun parseShellServiceOutput(raw: String): Triple<Int, String, String> {
+    if (raw.startsWith("error=")) {
+      return Triple(1, "", raw.removePrefix("error="))
+    }
+    if (raw.startsWith("exit=")) {
+      val header = raw.substringBefore(" | ")
+      val code = header.removePrefix("exit=").trim().toIntOrNull() ?: 0
+      val body = if (" | " in raw) raw.substringAfter(" | ") else ""
+      return if (code == 0) Triple(0, body, "") else Triple(code, body, body)
+    }
+    return Triple(0, raw, "")
+  }
+
   suspend fun sampleAndroid11FpsTelemetry(): Pair<Int?, String?> =
     withContext(Dispatchers.IO) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return@withContext null to null

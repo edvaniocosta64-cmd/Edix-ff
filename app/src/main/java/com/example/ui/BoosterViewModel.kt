@@ -20,6 +20,7 @@ import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.guardian.InfinitGuardianEngine
 import com.example.model.AxExtensionModule
+import com.example.model.AxToggleableOption
 import com.example.model.BoosterSettings
 import com.example.model.BottleneckFinding
 import com.example.model.CoolerSpeed
@@ -748,6 +749,109 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       }
     }
   }
+
+  fun toggleAxPluginOption(
+    pluginId: String,
+    option: AxToggleableOption,
+    enable: Boolean,
+  ) {
+    viewModelScope.launch {
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      val cmdToRun = if (enable) option.enableCommand else option.disableCommand
+      if (cmdToRun.isNotBlank() && !shizukuConnected) {
+        telemetryManager.pulseHaptic(false)
+        _uiState.update {
+          it.copy(
+            statusBanner =
+              "Conecte e autorize o Shizuku para aplicar '${option.title}' no sistema.",
+          )
+        }
+        return@launch
+      }
+
+      val (ok, log) =
+        shizukuBridge.executeSinglePluginOption(
+          enableCmd = option.enableCommand,
+          disableCmd = option.disableCommand,
+          enable = enable,
+          optionTitle = option.title,
+        )
+      if (!ok) {
+        telemetryManager.pulseHaptic(false)
+        _uiState.update { it.copy(statusBanner = log) }
+        return@launch
+      }
+
+      val updated =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.toggleOptionKey(
+            pluginId = pluginId,
+            optionKey = option.key,
+            active = enable,
+            lastLog = log,
+          )
+        }
+      telemetryManager.pulseHaptic(enable)
+      _uiState.update {
+        it.copy(
+          axExtensions = updated,
+          statusBanner = log,
+        )
+      }
+    }
+  }
+
+  fun runAxPluginScript(pluginId: String, scriptPath: String) {
+    viewModelScope.launch {
+      val plugin = _uiState.value.axExtensions.firstOrNull { it.id == pluginId } ?: return@launch
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      if (!shizukuConnected) {
+        telemetryManager.pulseHaptic(false)
+        _uiState.update {
+          it.copy(statusBanner = "Conecte e autorize o Shizuku para executar $scriptPath.")
+        }
+        return@launch
+      }
+      val scriptText =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.readPluginFileText(plugin, scriptPath, maxChars = 128_000)
+        }
+      if (scriptText.isNullOrBlank()) {
+        _uiState.update { it.copy(statusBanner = "Arquivo $scriptPath está vazio ou ilegível.") }
+        return@launch
+      }
+
+      withContext(Dispatchers.IO) {
+        shizukuBridge.syncPluginWorkspaceToTmp(plugin, axExtensionManager.getPluginDirectory(plugin))
+      }
+      val (code, stdout, stderr) =
+        shizukuBridge.executePluginScriptText(plugin, scriptPath, scriptText)
+      val output = stdout.ifBlank { stderr }.ifBlank { "exit=$code" }.take(140)
+      val log = "[$scriptPath • exit=$code] $output"
+      val updated =
+        withContext(Dispatchers.IO) {
+          axExtensionManager.updatePluginStatus(pluginId, enabled = plugin.enabled || code == 0, lastLog = log)
+        }
+      telemetryManager.pulseHaptic(code == 0)
+      _uiState.update {
+        it.copy(
+          axExtensions = updated,
+          statusBanner = log,
+        )
+      }
+    }
+  }
+
+  fun readAxPluginFileText(module: AxExtensionModule, relativePath: String): String? =
+    axExtensionManager.readPluginFileText(module, relativePath)
+
+  fun getAxPluginBannerFile(module: AxExtensionModule): File? =
+    axExtensionManager.getBannerFile(module)
+
+  fun buildAxToggleableOptions(module: AxExtensionModule): List<AxToggleableOption> =
+    axExtensionManager.buildToggleableOptions(module)
 
   fun restoreAllFactoryDefaults(activity: Activity?) {
     viewModelScope.launch {

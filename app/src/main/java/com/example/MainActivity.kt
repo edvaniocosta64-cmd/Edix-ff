@@ -319,6 +319,21 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     onRemoveAxPlugin = { pluginId ->
                       viewModel.removeAxPlugin(pluginId)
                     },
+                    onToggleAxPluginOption = { pluginId, option, enable ->
+                      viewModel.toggleAxPluginOption(pluginId, option, enable)
+                    },
+                    onRunAxPluginScript = { pluginId, scriptPath ->
+                      viewModel.runAxPluginScript(pluginId, scriptPath)
+                    },
+                    onReadPluginFileText = { plugin, path ->
+                      viewModel.readAxPluginFileText(plugin, path)
+                    },
+                    onGetPluginBannerFile = { plugin ->
+                      viewModel.getAxPluginBannerFile(plugin)
+                    },
+                    onBuildToggleableOptions = { plugin ->
+                      viewModel.buildAxToggleableOptions(plugin)
+                    },
                     onApplyResolution = { w, h, dpi, lock, pct ->
                       viewModel.applyResolution(w, h, dpi, lock, pct)
                     },

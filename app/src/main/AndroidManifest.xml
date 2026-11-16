@@ -50,6 +50,12 @@
             android:excludeFromRecents="true"
             android:theme="@style/Theme.InfinitDialog" />
 
+        <activity
+            android:name=".ax.AxWebUiActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.MyApplication" />
+
         <service
             android:name=".resolution.ResolutionPanelService"
             android:exported="false"
