@@ -109,12 +109,6 @@ class FloatingResolutionOverlayService : Service() {
       return START_NOT_STICKY
     }
 
-    if (!Settings.canDrawOverlays(this)) {
-      scope.launch { repository.setFloatingResolutionOverlayEnabled(false) }
-      stopSelf()
-      return START_NOT_STICKY
-    }
-
     val notification = buildNotification()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       startForeground(
@@ -124,6 +118,13 @@ class FloatingResolutionOverlayService : Service() {
       )
     } else {
       startForeground(NOTIFICATION_ID, notification)
+    }
+
+    if (!Settings.canDrawOverlays(this)) {
+      scope.launch { repository.setFloatingResolutionOverlayEnabled(false) }
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+      return START_NOT_STICKY
     }
     isRunning = true
 

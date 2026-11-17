@@ -104,7 +104,7 @@ object ShizukuModulesCatalog {
     list += "Power / Fixed Perf" to "cmd power set-fixed-performance-mode-enabled false; cmd power set-adaptive-power-saver-enabled true"
     list += "Limite Térmico Padrão" to "cmd thermalservice reset"
     list += "Animações 1.0x" to "settings put global window_animation_scale 1.0; settings put global transition_animation_scale 1.0; settings put global animator_duration_scale 1.0"
-    list += "Renderização Padrão" to "setprop debug.hwui.renderer ''; setprop debug.renderengine.backend ''; setprop debug.egl.force_msaa 0; settings delete global angle_gl_driver_all_angle; settings delete global angle_gl_driver_selection_pkgs; settings delete global angle_gl_driver_selection_values"
+    list += "Renderização Padrão" to "setprop debug.hwui.renderer ''; setprop debug.renderengine.backend ''; setprop debug.egl.force_msaa 0; settings delete global angle_gl_driver_all_angle; settings delete global angle_gl_driver_selection_pkgs; settings delete global angle_gl_driver_selection_values; settings delete global game_driver_opt_in_apps; settings delete global updatable_driver_production_opt_in_apps; settings delete global updatable_driver_production_opt_out_apps"
     list += "Toque & SurfaceFlinger Padrão" to buildRestoreTouchDefaultsCommand()
     list += "Doze Padrão" to "dumpsys deviceidle enable"
     list += "VOID RAM Padrão" to "device_config delete activity_manager max_cached_processes"

@@ -2,12 +2,15 @@ package com.example.guardian
 
 import android.content.Context
 import android.os.Build
+import com.example.ax.AxExtensionManager
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.model.BoosterSettings
-import com.example.model.BottleneckSeverity
 import com.example.model.DeviceTelemetry
 import com.example.model.GuardianAlert
+import com.example.model.GuardianCause
+import com.example.model.GuardianOutcome
+import com.example.model.GuardianReport
 import com.example.model.GuardianSeverity
 import com.example.model.GuardianState
 import com.example.overlay.FloatingFpsMeterService
@@ -34,8 +37,9 @@ class InfinitGuardianEngine(private val context: Context) {
   private val alertHistory = mutableListOf<GuardianAlert>()
 
   private var totalRepairsCount = 0
-  private var lastMemoryHealAtMs = 0L
-  private var lastFrameHealAtMs = 0L
+  private var lastPipelineRunAtMs = 0L
+  private var lastDriftCheckAtMs = 0L
+  private var lastAxCheckAtMs = 0L
   private var lastShizukuRebindAtMs = 0L
   private var bindingStartedAtMs = 0L
   private val seenBackgroundAlertKeys = mutableSetOf<String>()
@@ -51,6 +55,7 @@ class InfinitGuardianEngine(private val context: Context) {
     telemetryManager: DeviceTelemetryManager,
     shizukuBridge: ShizukuBridge,
   ): GuardianCycleResult {
+    GuardianMemoryStore.ensureLoaded(context)
     val now = System.currentTimeMillis()
     val timestamp = timeFormat.format(Date(now))
     val autoRepair = settings.guardianAutoRepairEnabled
@@ -261,155 +266,132 @@ class InfinitGuardianEngine(private val context: Context) {
         )
     }
 
-    // 6. RAM Pressure / Travamento Risk
-    val highRamPressure = telemetry.isLowMemory || telemetry.ramPercent >= 84
-    if (highRamPressure) {
-      activeIssuePenalty += 22
-      val cooldownOk = forceManualHeal || (now - lastMemoryHealAtMs >= 25_000L)
-      if (shouldHeal && cooldownOk) {
-        lastMemoryHealAtMs = now
-        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-        if (shizukuConnected) {
-          shizukuBridge.runGuardianMaintenance(
-            trimMemoryAndCache = true,
-            liftBatterySaver = false,
-            boostActivePackage = null,
-          )
-        }
+    // 5b. Autorreparo seguro: AX Extension Center integrity + Boost drift check
+    if (shouldHeal && (forceManualHeal || now - lastAxCheckAtMs >= 30_000L)) {
+      lastAxCheckAtMs = now
+      val (_, axRepaired) = withContext(Dispatchers.IO) { AxExtensionManager(context).verifyIntegrityAndCleanup() }
+      if (axRepaired > 0) {
         totalRepairsCount++
+        val axReport =
+          GuardianReport(
+            id = "rep_module_ax_integrity",
+            timestampLabel = timestamp,
+            detectedProblem = "Módulo AX com diretório ausente ($axRepaired)",
+            probableCause = GuardianCause.MODULE_STATE,
+            causeDetail = "Plugin marcado ativo estava sem pasta válida no armazenamento.",
+            correctionApplied = "Plugin normalizado com segurança no catálogo do AX Extension Center.",
+            strategyKey = "AX_CATALOG_REPAIR",
+            outcome = GuardianOutcome.RESOLVED,
+            verificationResult = "Integridade do AX Center restaurada ($axRepaired reparo(s)).",
+          )
+        GuardianMemoryStore.recordFixVerification(context, axReport)
         newAlerts +=
           GuardianAlert(
-            id = "ram_auto_heal",
-            title = "Anti-Travamento RAM executado (${telemetry.ramPercent}%)",
-            detail =
-              if (shizukuConnected)
-                "IA liberou ${freed} MB locais e encerrou processos ociosos via Shizuku para impedir travamentos."
-              else
-                "IA limpou caches e liberou ${freed} MB de memória diante de uso elevado (${telemetry.ramPercent}%).",
+            id = "ax_integrity_repair",
+            title = "Autorreparo: Plugin AX corrigido ($axRepaired)",
+            detail = axReport.verificationResult,
             severity = GuardianSeverity.FIXED,
             timestampLabel = timestamp,
             autoFixed = true,
           )
-        notices += "IA Guardião evitou travamento de RAM (${freed} MB)"
-      } else if (!autoRepair) {
+      }
+    }
+
+    if (shouldHeal && shizukuConnected && settings.boostActive &&
+      (forceManualHeal || now - lastDriftCheckAtMs >= 20_000L)
+    ) {
+      lastDriftCheckAtMs = now
+      val targetHz = maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60)
+      val driftRepairs = shizukuBridge.checkAndRepairBoostDriftViaShizuku(settings, targetHz)
+      if (driftRepairs.isNotEmpty()) {
+        totalRepairsCount++
+        val summary = driftRepairs.joinToString(" • ")
+        val driftReport =
+          GuardianReport(
+            id = "rep_module_boost_drift",
+            timestampLabel = timestamp,
+            detectedProblem = "Sistema reduziu ajustes do Boost em 2º plano",
+            probableCause = GuardianCause.MODULE_STATE,
+            causeDetail = "Android reverteu taxa de Hz, escala de animação ou ativou economia.",
+            correctionApplied = summary,
+            strategyKey = "MODULE_REASSERT_BOOST",
+            outcome = GuardianOutcome.RESOLVED,
+            verificationResult = "Parâmetros de Boost restaurados sem desligar nenhuma função.",
+          )
+        GuardianMemoryStore.recordFixVerification(context, driftReport)
+        newAlerts +=
+          GuardianAlert(
+            id = "module_boost_drift",
+            title = "Autorreparo: Boost restaurado",
+            detail = summary,
+            severity = GuardianSeverity.FIXED,
+            timestampLabel = timestamp,
+            autoFixed = true,
+          )
+        notices += "IA Guardião restaurou ajustes do Boost automaticamente"
+      }
+    }
+
+    // 6. Pipeline Inteligente em 4 Etapas: Detectar -> Analisar -> Corrigir -> Verificar
+    val pipelineCooldownOk = forceManualHeal || (now - lastPipelineRunAtMs >= 22_000L)
+    if (shouldHeal && pipelineCooldownOk) {
+      val probe = if (shizukuConnected && forceManualHeal) shizukuBridge.probeLiveStuttersViaShizuku() else null
+      val pipelineResult =
+        GuardianDiagnosticPipeline.runFourStageCycle(
+          context = context,
+          telemetryBefore = telemetry,
+          probeBefore = probe,
+          shizukuConnected = shizukuConnected,
+          activePackage = probe?.foregroundPackage,
+          gameLabel = probe?.foregroundPackage?.substringAfterLast('.'),
+          targetHz = maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60),
+          perGameRenderer = null,
+          isInGame = false,
+          telemetryManager = telemetryManager,
+          shizukuBridge = shizukuBridge,
+          forceDeepAnalyze = forceManualHeal,
+        )
+      if (pipelineResult != null) {
+        lastPipelineRunAtMs = System.currentTimeMillis()
+        if (pipelineResult.report.outcome != GuardianOutcome.PERSISTING) {
+          totalRepairsCount++
+        } else {
+          activeIssuePenalty += 12
+        }
+        newAlerts += pipelineResult.alert
+        notices += "${pipelineResult.report.outcome.label}: ${pipelineResult.report.detectedProblem}"
+      }
+    } else if (!autoRepair) {
+      // Auto-repair paused: detect warnings passively without mutating settings
+      if (telemetry.isLowMemory || telemetry.ramPercent >= 84) {
+        activeIssuePenalty += 20
         newAlerts +=
           GuardianAlert(
             id = "ram_warn",
             title = "Aviso: RAM crítica em ${telemetry.ramPercent}%",
-            detail = "Restam ${telemetry.ramAvailMb} MB livres. Risco alto de travamentos nos jogos.",
+            detail = "Restam ${telemetry.ramAvailMb} MB livres. Toque em Analisar & Corrigir.",
             severity = GuardianSeverity.WARNING,
             timestampLabel = timestamp,
           )
       }
-    }
-
-    // 7. Frame Drops / UI Stutter Detection
-    val hasFrameLag =
-      telemetry.avgFrameTimeMs > 23.0f ||
-        (telemetry.liveFps in 1..44 && telemetry.maxDisplayHz >= 60)
-    if (hasFrameLag) {
-      activeIssuePenalty += 15
-      val cooldownOk = forceManualHeal || (now - lastFrameHealAtMs >= 25_000L)
-      if (shouldHeal && cooldownOk) {
-        lastFrameHealAtMs = now
-        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-        if (shizukuConnected) {
-          shizukuBridge.runGuardianMaintenance(
-            trimMemoryAndCache = true,
-            liftBatterySaver = false,
-            boostActivePackage = null,
-          )
-        }
-        totalRepairsCount++
-        newAlerts +=
-          GuardianAlert(
-            id = "fps_drop_heal",
-            title = "Queda de FPS detectada (${telemetry.liveFps} FPS)",
-            detail =
-              "Latência de quadro em ${String.format(Locale.US, "%.1f", telemetry.avgFrameTimeMs)}ms. IA estabilizou buffers (${freed} MB limpos).",
-            severity = GuardianSeverity.FIXED,
-            timestampLabel = timestamp,
-            autoFixed = true,
-          )
-      } else if (!autoRepair) {
-        newAlerts +=
-          GuardianAlert(
-            id = "fps_drop_warn",
-            title = "Aviso: Travamento de quadros (${telemetry.liveFps} FPS)",
-            detail =
-              "Tempo de quadro em ${String.format(Locale.US, "%.1f", telemetry.avgFrameTimeMs)}ms. Toque em Corrigir Agora.",
-            severity = GuardianSeverity.WARNING,
-            timestampLabel = timestamp,
-          )
-      }
-    }
-
-    // 8. Thermal Advisory & Safe Background Cleanup (NEVER disables user optimizations!)
-    val overheating =
-      telemetry.batteryTempC >= 41.5f || telemetry.thermalSeverity == BottleneckSeverity.CRITICAL
-    if (overheating) {
-      activeIssuePenalty += 16
-      val extremeHeat = telemetry.batteryTempC >= 43.0f
-      if (shouldHeal && extremeHeat && (now - lastMemoryHealAtMs >= 25_000L)) {
-        lastMemoryHealAtMs = now
-        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-        if (shizukuConnected) {
-          shizukuBridge.runGuardianMaintenance(
-            trimMemoryAndCache = true,
-            liftBatterySaver = false,
-            boostActivePackage = null,
-          )
-        }
-        totalRepairsCount++
-        newAlerts +=
-          GuardianAlert(
-            id = "thermal_relief_clean",
-            title = "Alívio térmico sem desligar otimizações (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
-            detail =
-              "2º plano e ${freed} MB de cache foram limpos para reduzir aquecimento mantendo seu Boost, Renderização e Desempenho Total ativos.",
-            severity = GuardianSeverity.FIXED,
-            timestampLabel = timestamp,
-            autoFixed = true,
-          )
-        notices += "IA limpou 2º plano pelo calor (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C) sem resetar ajustes"
-      } else {
+      if (telemetry.batteryTempC >= 39.5f) {
+        activeIssuePenalty += if (telemetry.batteryTempC >= 41.5f) 18 else 10
         newAlerts +=
           GuardianAlert(
             id = "thermal_warn",
-            title = "Aviso: Aparelho quente (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
-            detail =
-              "Temperatura alta detectada. Suas otimizações continuam ativas; use o Cooler Criogênico se desejar resfriar.",
+            title = "Prevenção Térmica (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
+            detail = "Temperatura subindo. Suas otimizações continuam ativas; use o Cooler se precisar.",
             severity = GuardianSeverity.WARNING,
             timestampLabel = timestamp,
           )
       }
-    }
-
-    // 9. Battery Saver Throttling Check
-    if (telemetry.isPowerSaveMode) {
-      activeIssuePenalty += 18
-      if (shouldHeal && settings.boostActive && shizukuConnected) {
-        shizukuBridge.runGuardianMaintenance(
-          trimMemoryAndCache = false,
-          liftBatterySaver = true,
-          boostActivePackage = null,
-        )
-        totalRepairsCount++
-        newAlerts +=
-          GuardianAlert(
-            id = "power_save_lifted",
-            title = "Economia de bateria suspensa no Boost",
-            detail = "O modo economia estava cortando seus Hz/FPS; a IA suspendeu via Shizuku.",
-            severity = GuardianSeverity.FIXED,
-            timestampLabel = timestamp,
-            autoFixed = true,
-          )
-      } else {
+      if (telemetry.isPowerSaveMode) {
+        activeIssuePenalty += 16
         newAlerts +=
           GuardianAlert(
             id = "power_save_warn",
             title = "Aviso: Economia de Bateria ativa",
-            detail = "A Economia de Bateria do Android limita CPU e reduz a fluidez de 90/120Hz.",
+            detail = "Economia do Android limita CPU e Hz.",
             severity = GuardianSeverity.WARNING,
             timestampLabel = timestamp,
           )
@@ -429,7 +411,6 @@ class InfinitGuardianEngine(private val context: Context) {
     }
     val combinedIncoming = freshBackgroundAlerts + newAlerts
 
-    // Update rolling alert feed cleanly (replace matching IDs with freshest, cap at 10)
     if (combinedIncoming.isNotEmpty()) {
       combinedIncoming.forEach { incoming ->
         alertHistory.removeAll { it.id == incoming.id }
@@ -438,36 +419,21 @@ class InfinitGuardianEngine(private val context: Context) {
       while (alertHistory.size > 10) {
         alertHistory.removeAt(alertHistory.lastIndex)
       }
-    } else if (forceManualHeal) {
-      val okAlert =
-        GuardianAlert(
-          id = "manual_clean_ok",
-          title = "Varredura concluída: nenhum bug encontrado",
-          detail =
-            "RAM (${telemetry.ramPercent}%), quadros (${telemetry.liveFps} FPS) e módulos estão estáveis e sem travamentos.",
-          severity = GuardianSeverity.INFO,
-          timestampLabel = timestamp,
-          autoFixed = false,
-        )
-      alertHistory.removeAll { it.id == "manual_clean_ok" }
-      alertHistory.add(0, okAlert)
-      while (alertHistory.size > 10) {
-        alertHistory.removeAt(alertHistory.lastIndex)
-      }
     }
 
+    val memSnap = GuardianMemoryStore.snapshot.value
     val combinedRepairs = totalRepairsCount + live24h.repairs24hCount
     val score = (100 - activeIssuePenalty).coerceIn(25, 100)
     val summary =
       when {
         !shizukuConnected ->
-          "Aguardando Shizuku ativo • Monitoramento 24h entra automático ao conectar ($score%)"
+          "Aguardando Shizuku ativo • Pipeline Detectar→Analisar→Corrigir→Verificar pronto ($score%)"
         !autoRepair -> "Monitor 24h pausado manualmente • Saúde $score%"
         live24h.running24h ->
-          "Monitor 24h ativo via Shizuku • Suas otimizações sempre preservadas ($score%)"
+          "24h Ativo (Detectar→Analisar→Corrigir→Verificar) • Otimizações preservadas ($score%)"
         newAlerts.any { it.autoFixed } ->
-          "IA corrigiu ${newAlerts.count { it.autoFixed }} travamento(s) agora • Saúde $score%"
-        else -> "IA Guardião 24h via Shizuku pronta • Sem travamentos ($score%)"
+          "IA corrigiu e verificou ${newAlerts.count { it.autoFixed }} ocorrência(s) • Saúde $score%"
+        else -> "IA Guardião 24h pronta • Memória e relatórios ativos ($score%)"
       }
 
     return GuardianCycleResult(
@@ -475,13 +441,18 @@ class InfinitGuardianEngine(private val context: Context) {
         GuardianState(
           autoRepairEnabled = autoRepair,
           isAnalyzing = false,
+          currentStage = memSnap.currentStage,
           healthScore = score,
           statusSummary = summary,
           totalRepairsCount = combinedRepairs,
           lastCheckLabel =
             if (live24h.running24h) live24h.lastProbeLabel
             else "Última checagem: $timestamp",
+          lastCauseDetected = memSnap.lastCauseDetected,
+          avoidedRepeatsCount = memSnap.avoidedRepeatsCount,
           alerts = alertHistory.toList(),
+          reports = memSnap.reports,
+          gameHealthMap = memSnap.gameHealthMap,
         ),
       userNotice = notices.firstOrNull(),
     )
@@ -489,7 +460,14 @@ class InfinitGuardianEngine(private val context: Context) {
 
   fun dismissAlert(alertId: String, currentState: GuardianState): GuardianState {
     alertHistory.removeAll { it.id == alertId }
-    return currentState.copy(alerts = alertHistory.toList())
+    GuardianMemoryStore.dismissReport(context, alertId)
+    val memSnap = GuardianMemoryStore.snapshot.value
+    return currentState.copy(
+      alerts = alertHistory.toList(),
+      reports = memSnap.reports,
+      avoidedRepeatsCount = memSnap.avoidedRepeatsCount,
+      gameHealthMap = memSnap.gameHealthMap,
+    )
   }
 
   fun recordExternalFix(

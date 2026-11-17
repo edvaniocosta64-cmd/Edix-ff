@@ -22,6 +22,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -102,6 +104,8 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.AnimationScaleOption
 import com.example.model.GraphicsBackend
+import com.example.model.GuardianOutcome
+import com.example.model.GuardianPipelineStage
 import com.example.model.GuardianSeverity
 import com.example.model.GuardianState
 import com.example.model.RefreshRateOption
@@ -459,7 +463,11 @@ fun BoosterDashboardScreen(
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           val visibleHzOptions =
-            RefreshRateOption.entries.filter { it.hz <= 120 || telemetry.maxDisplayHz >= 144 }
+            RefreshRateOption.entries.filter {
+              it.hz <= 120 ||
+                telemetry.maxDisplayHz >= 144 ||
+                settings.targetRefreshRate == RefreshRateOption.HZ_144
+            }
           visibleHzOptions.forEach { option ->
             val selected = settings.targetRefreshRate == option
             val bgColor by
@@ -973,6 +981,7 @@ fun BoosterDashboardScreen(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GuardianAiCard(
   guardian: GuardianState,
@@ -1042,10 +1051,84 @@ private fun GuardianAiCard(
       color = ColdWhite,
     )
     Text(
-      text = "${guardian.lastCheckLabel} • ${guardian.totalRepairsCount} correção(ões) automática(s)",
+      text = "${guardian.lastCheckLabel} • ${guardian.totalRepairsCount} correção(ões)",
       style = MaterialTheme.typography.labelSmall,
       color = MutedLavender,
     )
+
+    // 4-Stage Diagnostic Pipeline Strip
+    Spacer(modifier = Modifier.height(10.dp))
+    val stages =
+      listOf(
+        GuardianPipelineStage.DETECT,
+        GuardianPipelineStage.ANALYZE,
+        GuardianPipelineStage.FIX,
+        GuardianPipelineStage.VERIFY,
+      )
+    Row(
+      modifier = Modifier.fillMaxWidth().testTag("guardian_pipeline_strip"),
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      stages.forEach { step ->
+        val isActive = guardian.currentStage == step
+        val isDone =
+          guardian.currentStage != GuardianPipelineStage.IDLE &&
+            guardian.currentStage.stepIndex > step.stepIndex
+        val stepColor =
+          when {
+            isActive -> LimitlessCyan
+            isDone -> NeonSuccess
+            else -> MutedLavender.copy(alpha = 0.7f)
+          }
+        Surface(
+          modifier = Modifier.weight(1f),
+          shape = RoundedCornerShape(8.dp),
+          color = if (isActive || isDone) stepColor.copy(alpha = 0.16f) else VoidObsidian.copy(alpha = 0.65f),
+          border = BorderStroke(1.dp, if (isActive) LimitlessCyan else stepColor.copy(alpha = 0.38f)),
+        ) {
+          Text(
+            text = "${step.stepIndex}. ${step.label}",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (isActive || isDone) ColdWhite else MutedLavender,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+          )
+        }
+      }
+    }
+
+    // Root Cause & Memory Strip
+    Spacer(modifier = Modifier.height(8.dp))
+    FlowRow(
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = VoidObsidian.copy(alpha = 0.7f),
+        border = BorderStroke(1.dp, HollowPurpleBright.copy(alpha = 0.45f)),
+      ) {
+        Text(
+          text = "Causa recente: ${guardian.lastCauseDetected.label}",
+          style = MaterialTheme.typography.labelSmall,
+          color = HollowPurpleBright,
+          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+      }
+      Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = VoidObsidian.copy(alpha = 0.7f),
+        border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.45f)),
+      ) {
+        Text(
+          text = "Memória: ${guardian.avoidedRepeatsCount} falha(s) evitada(s)",
+          style = MaterialTheme.typography.labelSmall,
+          color = LimitlessCyan,
+          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+      }
+    }
 
     Spacer(modifier = Modifier.height(10.dp))
     Row(
@@ -1065,7 +1148,7 @@ private fun GuardianAiCard(
           color = ColdWhite,
         )
         Text(
-          text = "Ativa sozinho em 2º plano quando o Shizuku está conectado e melhora travamentos sem resetar suas opções",
+          text = "Investiga em 4 etapas e corrige travamentos ao vivo sem desligar seus ajustes",
           style = MaterialTheme.typography.bodySmall,
           color = MutedLavender,
         )
@@ -1113,14 +1196,159 @@ private fun GuardianAiCard(
       }
       Spacer(modifier = Modifier.size(8.dp))
       Text(
-        text = if (guardian.isAnalyzing) "Analisando e Corrigindo..." else "Corrigir Bugs & Travamentos Agora",
+        text =
+          if (guardian.isAnalyzing) "Pipeline: ${guardian.currentStage.label}..."
+          else "Investigar & Corrigir (4 Etapas)",
         style = MaterialTheme.typography.labelLarge,
         color = ColdWhite,
       )
     }
 
+    // Per-Game Stability Strip
+    if (guardian.gameHealthMap.isNotEmpty()) {
+      Spacer(modifier = Modifier.height(10.dp))
+      Text(
+        text = "Monitoramento por Jogo",
+        style = MaterialTheme.typography.labelMedium,
+        color = ColdWhite,
+      )
+      Spacer(modifier = Modifier.height(6.dp))
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        guardian.gameHealthMap.values
+          .sortedByDescending { it.lagEventsCount }
+          .take(4)
+          .forEach { gh ->
+            val gameAccent =
+              if (gh.failedFixesCount > gh.resolvedFixesCount) WarningAmber else NeonSuccess
+            Surface(
+              shape = RoundedCornerShape(8.dp),
+              color = gameAccent.copy(alpha = 0.12f),
+              border = BorderStroke(1.dp, gameAccent.copy(alpha = 0.45f)),
+            ) {
+              val minFpsPart = gh.lowestFpsSeen?.let { " • mín ${it}FPS" }.orEmpty()
+              val causePart = gh.lastCause?.label?.let { " • $it" }.orEmpty()
+              Text(
+                text = "${gh.gameLabel}: ${gh.lagEventsCount} lag(s)$minFpsPart$causePart",
+                style = MaterialTheme.typography.labelSmall,
+                color = gameAccent,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+              )
+            }
+          }
+      }
+    }
+
+    // Relatórios Inteligentes
+    if (guardian.reports.isNotEmpty()) {
+      Spacer(modifier = Modifier.height(10.dp))
+      Text(
+        text = "Relatórios Inteligentes",
+        style = MaterialTheme.typography.labelMedium,
+        color = ColdWhite,
+      )
+      Spacer(modifier = Modifier.height(6.dp))
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        guardian.reports.take(3).forEach { report ->
+          val outcomeColor =
+            when (report.outcome) {
+              GuardianOutcome.RESOLVED -> NeonSuccess
+              GuardianOutcome.IMPROVED -> LimitlessCyan
+              GuardianOutcome.PREVENTIVE -> WarningAmber
+              GuardianOutcome.PERSISTING -> ReversalRed
+            }
+          Surface(
+            modifier = Modifier.fillMaxWidth().testTag("guardian_report_${report.id}"),
+            shape = RoundedCornerShape(12.dp),
+            color = VoidObsidian.copy(alpha = 0.86f),
+            border = BorderStroke(1.dp, outcomeColor.copy(alpha = 0.55f)),
+          ) {
+            Row(
+              modifier = Modifier.padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+              verticalAlignment = Alignment.Top,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = outcomeColor.copy(alpha = 0.18f),
+                  ) {
+                    Text(
+                      text = report.outcome.label.uppercase(),
+                      style = MaterialTheme.typography.labelSmall,
+                      color = outcomeColor,
+                      modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                  }
+                  if (report.avoidedRepeatedStrategy) {
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = HollowPurple.copy(alpha = 0.25f),
+                    ) {
+                      Text(
+                        text = "ESTRATÉGIA NOVA",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = HollowPurpleBright,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                      )
+                    }
+                  }
+                  Spacer(modifier = Modifier.weight(1f))
+                  Text(
+                    text = report.timestampLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MutedLavender,
+                  )
+                }
+                Text(
+                  text = "Problema: ${report.detectedProblem}",
+                  style = MaterialTheme.typography.labelLarge,
+                  color = ColdWhite,
+                )
+                Text(
+                  text = "Causa: ${report.probableCause.label} — ${report.causeDetail}",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MutedLavender,
+                )
+                Text(
+                  text = "Correção: ${report.correctionApplied}",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = LimitlessCyan,
+                )
+                Text(
+                  text = "Resultado: ${report.verificationResult}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = outcomeColor,
+                )
+              }
+              IconButton(
+                onClick = { onDismissAlert(report.id) },
+                modifier = Modifier.minimumInteractiveComponentSize(),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Close,
+                  contentDescription = "Dispensar relatório",
+                  tint = MutedLavender,
+                  modifier = Modifier.size(16.dp),
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+
     Spacer(modifier = Modifier.height(10.dp))
-    if (guardian.alerts.isEmpty()) {
+    if (guardian.alerts.isEmpty() && guardian.reports.isEmpty()) {
       Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
@@ -1145,9 +1373,9 @@ private fun GuardianAiCard(
           )
         }
       }
-    } else {
+    } else if (guardian.alerts.isNotEmpty()) {
       Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        guardian.alerts.take(4).forEach { alert ->
+        guardian.alerts.take(3).forEach { alert ->
           val (accent, icon) =
             when (alert.severity) {
               GuardianSeverity.FIXED -> NeonSuccess to Icons.Rounded.CheckCircle

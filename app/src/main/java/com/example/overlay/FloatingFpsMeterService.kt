@@ -126,12 +126,6 @@ class FloatingFpsMeterService : Service() {
       return START_NOT_STICKY
     }
 
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !Settings.canDrawOverlays(this)) {
-      scope.launch { repository.setFloatingFpsMeterEnabled(false) }
-      stopSelf()
-      return START_NOT_STICKY
-    }
-
     val notification = buildNotification()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       startForeground(
@@ -141,6 +135,13 @@ class FloatingFpsMeterService : Service() {
       )
     } else {
       startForeground(NOTIFICATION_ID, notification)
+    }
+
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !Settings.canDrawOverlays(this)) {
+      scope.launch { repository.setFloatingFpsMeterEnabled(false) }
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+      return START_NOT_STICKY
     }
     isRunning = true
 

@@ -240,9 +240,9 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
 
           Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
             val baseDuration =
-              when (state.settings.targetRefreshRate.hz) {
-                120 -> 180
-                90 -> 210
+              when {
+                state.settings.targetRefreshRate.hz >= 120 -> 180
+                state.settings.targetRefreshRate.hz >= 90 -> 210
                 else -> 250
               }
             val animDuration = (baseDuration * state.settings.animationScale).roundToInt().coerceIn(0, 350)

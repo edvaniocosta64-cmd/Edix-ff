@@ -19,6 +19,7 @@ import com.example.ax.AxExtensionManager
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.guardian.GuardianLiveBus
+import com.example.guardian.GuardianMemoryStore
 import com.example.guardian.GuardianMonitorService
 import com.example.guardian.InfinitGuardianEngine
 import com.example.model.AxExtensionModule
@@ -28,8 +29,12 @@ import com.example.model.BottleneckFinding
 import com.example.model.CoolerSpeed
 import com.example.model.DeviceTelemetry
 import com.example.model.DiagnosticAction
+import com.example.model.GameRendererMode
 import com.example.model.GraphicsBackend
 import com.example.model.GraphicsRendererStatus
+import com.example.model.GuardianCause
+import com.example.model.GuardianOutcome
+import com.example.model.GuardianReport
 import com.example.model.GuardianState
 import com.example.model.InstalledAppItem
 import com.example.model.PerGameConfig
@@ -100,10 +105,44 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   private var hasSyncedInitialMusic = false
 
   init {
+    GuardianMemoryStore.ensureLoaded(application)
     refreshSpecialPermissions()
     viewModelScope.launch {
-      val (loadedPlugins, _) =
+      GuardianMemoryStore.snapshot.collect { mem ->
+        _uiState.update { state ->
+          state.copy(
+            guardianState =
+              state.guardianState.copy(
+                currentStage = mem.currentStage,
+                lastCauseDetected = mem.lastCauseDetected,
+                avoidedRepeatsCount = mem.avoidedRepeatsCount,
+                reports = mem.reports,
+                gameHealthMap = mem.gameHealthMap,
+              ),
+          )
+        }
+      }
+    }
+    viewModelScope.launch {
+      val (loadedPlugins, repairedCount) =
         withContext(Dispatchers.IO) { axExtensionManager.verifyIntegrityAndCleanup() }
+      if (repairedCount > 0) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        GuardianMemoryStore.recordFixVerification(
+          application,
+          GuardianReport(
+            id = "rep_module_ax_boot",
+            timestampLabel = ts,
+            detectedProblem = "Plugin AX com diretório ausente na inicialização ($repairedCount)",
+            probableCause = GuardianCause.MODULE_STATE,
+            causeDetail = "Pasta de plugin removido externamente antes de abrir o app.",
+            correctionApplied = "Catálogo do AX Extension Center normalizado automaticamente.",
+            strategyKey = "AX_CATALOG_REPAIR",
+            outcome = GuardianOutcome.RESOLVED,
+            verificationResult = "Módulos do app consistentes ($repairedCount reparo).",
+          ),
+        )
+      }
       _uiState.update { it.copy(axExtensions = loadedPlugins) }
     }
     viewModelScope.launch {
@@ -283,6 +322,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
 
   fun dismissGuardianAlert(alertId: String) {
     GuardianLiveBus.dismissBackgroundAlert(alertId)
+    GuardianMemoryStore.dismissReport(getApplication(), alertId)
     _uiState.update { state ->
       state.copy(guardianState = guardianEngine.dismissAlert(alertId, state.guardianState))
     }
@@ -408,6 +448,12 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     val s = _uiState.value.settings
     if (s.bgMusicEnabled && musicEngine.hasMusic()) {
       musicEngine.startOrResume(s.bgMusicVolume)
+    }
+    if (GameDpiSessionService.isRunning &&
+      _uiState.value.shizukuStatus.connectionState != ShizukuConnectionState.CONNECTED &&
+      (System.currentTimeMillis() - GameDpiSessionService.startedAtMs) >= 4000L
+    ) {
+      GameDpiSessionService.restoreAndStop(getApplication())
     }
   }
 
@@ -900,6 +946,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       GameDpiSessionService.restoreAndStop(app)
       GuardianMonitorService.stop(app)
       GuardianLiveBus.resetAll()
+      GuardianMemoryStore.clearAll(app)
 
       if (shizukuConnected) {
         activeAxPlugins.forEach { plugin ->
@@ -1270,6 +1317,11 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   fun updatePerGameConfig(config: PerGameConfig) {
     viewModelScope.launch {
       repository.setPerGameConfig(config)
+      if (config.rendererMode == GameRendererMode.GLOBAL &&
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      ) {
+        shizukuBridge.clearPerGameDriverOptIn(config.packageName)
+      }
       telemetryManager.pulseHaptic(false)
     }
   }
@@ -1426,6 +1478,10 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     viewModelScope.launch {
       repository.removeGamePackage(packageName)
       repository.removePerGameConfig(packageName)
+      GuardianMemoryStore.removeGame(getApplication(), packageName)
+      if (_uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED) {
+        shizukuBridge.clearPerGameDriverOptIn(packageName)
+      }
       telemetryManager.pulseHaptic(false)
     }
   }
@@ -1497,12 +1553,33 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
         } else {
           null
         }
-      val combinedLogs =
-        ((shizukuReport?.details ?: emptyList()) + (rootReport?.details ?: emptyList())).distinct()
       val gameCfg = current.perGameConfigs[packageName]
-      val hasGameDpiOrTouch =
-        gameCfg != null && (gameCfg.customDpi != null || gameCfg.touchScriptEnabled)
-      if (hasGameDpiOrTouch && gameCfg != null) {
+      val perGameRenderLog =
+        if (shizukuConnected && gameCfg != null && gameCfg.rendererMode != GameRendererMode.GLOBAL) {
+          shizukuBridge.applyPerGameRenderer(packageName, gameCfg.rendererMode)
+        } else {
+          if (shizukuConnected) {
+            shizukuBridge.clearPerGameDriverOptIn(packageName)
+          }
+          null
+        }
+      val verifiedGraphics =
+        if (shizukuConnected) {
+          shizukuBridge.verifyGraphicsBackendStatus(current.addedGamePackages + packageName)
+        } else {
+          _uiState.value.graphicsStatus
+        }
+      val combinedLogs =
+        buildList {
+          shizukuReport?.details?.let { addAll(it) }
+          rootReport?.details?.let { addAll(it) }
+          perGameRenderLog?.let { add(it) }
+        }.distinct()
+
+      val needsGameSession =
+        gameCfg != null &&
+          (gameCfg.customDpi != null || gameCfg.touchScriptEnabled || gameCfg.guardianBetaEnabled)
+      if (needsGameSession && gameCfg != null) {
         GameDpiSessionService.start(
           context = getApplication(),
           packageName = packageName,
@@ -1510,28 +1587,55 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           customDpi = gameCfg.customDpi,
           touchEnabled = gameCfg.touchScriptEnabled,
           touchSensitivity = gameCfg.touchSensitivity,
+          guardianBetaEnabled = gameCfg.guardianBetaEnabled,
+          targetHz = deviceMaxHz,
+          rendererModeId = gameCfg.rendererMode.id,
         )
+      } else if (GameDpiSessionService.isRunning) {
+        GameDpiSessionService.restoreAndStop(getApplication())
       }
 
       voiceEngine.playHollowPurpleBoost(current.voiceEnabled)
       telemetryManager.pulseHaptic(heavy = true)
+      val effectiveRendererLabel =
+        if (gameCfg != null && gameCfg.rendererMode != GameRendererMode.GLOBAL) {
+          gameCfg.rendererMode.label
+        } else {
+          current.graphicsBackend.title
+        }
       val extra = buildList {
         if (shizukuReport != null) add("Shizuku")
         if (gameCfg?.customDpi != null) add("DPI ${gameCfg.customDpi}")
         if (gameCfg?.touchScriptEnabled == true) add("Touch Nv.${gameCfg.touchSensitivity}")
+        if (gameCfg?.guardianBetaEnabled == true) add("IA Beta")
       }.joinToString(" + ")
       val suffix = if (extra.isNotBlank()) " + $extra" else ""
+      val pendingParts = buildList {
+        if (gameCfg != null && gameCfg.rendererMode != GameRendererMode.GLOBAL) {
+          add(gameCfg.rendererMode.shortLabel)
+        }
+        if (gameCfg?.customDpi != null) add("DPI")
+        if (gameCfg?.touchScriptEnabled == true) add("Touch")
+      }
+      val shizukuWarn =
+        if (!shizukuConnected && pendingParts.isNotEmpty()) {
+          " • Conecte Shizuku p/ aplicar ${pendingParts.joinToString("/")}"
+        } else {
+          ""
+        }
       _uiState.update {
         it.copy(
           boostPulseKey = it.boostPulseKey + 1,
+          graphicsStatus = verifiedGraphics,
           shizukuLogs = combinedLogs.ifEmpty { it.shizukuLogs },
-          statusBanner = "Vazio Roxo ${deviceMaxHz}Hz (${current.graphicsBackend.title}$suffix) • Abrindo $label...",
+          statusBanner =
+            "Vazio Roxo ${deviceMaxHz}Hz ($effectiveRendererLabel$suffix) • Abrindo $label...$shizukuWarn",
         )
       }
-      delay(if (hasGameDpiOrTouch) 700L else 450L)
+      delay(if (needsGameSession) 700L else 450L)
       val launched = telemetryManager.launchPackage(packageName)
       if (!launched) {
-        if (hasGameDpiOrTouch) {
+        if (needsGameSession) {
           GameDpiSessionService.restoreAndStop(getApplication())
         }
         _uiState.update {

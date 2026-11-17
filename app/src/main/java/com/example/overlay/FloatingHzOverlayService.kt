@@ -127,12 +127,6 @@ class FloatingHzOverlayService : Service() {
       return START_NOT_STICKY
     }
 
-    if (!Settings.canDrawOverlays(this)) {
-      scope.launch { repository.setFloatingHzOverlayEnabled(false) }
-      stopSelf()
-      return START_NOT_STICKY
-    }
-
     val notification = buildNotification()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       startForeground(
@@ -142,6 +136,13 @@ class FloatingHzOverlayService : Service() {
       )
     } else {
       startForeground(NOTIFICATION_ID, notification)
+    }
+
+    if (!Settings.canDrawOverlays(this)) {
+      scope.launch { repository.setFloatingHzOverlayEnabled(false) }
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+      return START_NOT_STICKY
     }
     isRunning = true
 

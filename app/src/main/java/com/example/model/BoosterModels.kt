@@ -49,11 +49,45 @@ enum class AnimationScaleOption(val scale: Float, val label: String, val subtitl
   DEFAULT(1.0f, "1.0x", "Padrão"),
 }
 
+enum class GameRendererMode(
+  val id: String,
+  val label: String,
+  val shortLabel: String,
+  val description: String,
+) {
+  GLOBAL(
+    id = "GLOBAL",
+    label = "Padrão do App",
+    shortLabel = "Global",
+    description = "Segue a renderização global configurada na tela inicial.",
+  ),
+  SKIAVK(
+    id = "SKIAVK",
+    label = "SkiaVK",
+    shortLabel = "SkiaVK",
+    description = "Força pipeline Skia sobre Vulkan (skiavk + skiavkthreaded) para esse jogo.",
+  ),
+  VULKAN(
+    id = "VULKAN",
+    label = "Vulkan",
+    shortLabel = "Vulkan",
+    description = "Prioriza driver Vulkan/Game Driver + modo performance dedicado no pacote.",
+  ),
+  SKIAGL(
+    id = "SKIAGL",
+    label = "SkiaGL",
+    shortLabel = "SkiaGL",
+    description = "Pipeline Skia OpenGL (skiagl + skiaglthreaded) com máxima estabilidade.",
+  ),
+}
+
 data class PerGameConfig(
   val packageName: String,
   val customDpi: Int? = null,
   val touchScriptEnabled: Boolean = false,
   val touchSensitivity: Int = 7,
+  val rendererMode: GameRendererMode = GameRendererMode.GLOBAL,
+  val guardianBetaEnabled: Boolean = false,
 )
 
 enum class CoolerSpeed(val id: String, val label: String, val rpmText: String, val speedFactor: Float) {
@@ -150,6 +184,59 @@ enum class GuardianSeverity {
   FIXED,
 }
 
+enum class GuardianPipelineStage(val stepIndex: Int, val label: String) {
+  IDLE(0, "Vigilância"),
+  DETECT(1, "Detectar"),
+  ANALYZE(2, "Analisar"),
+  FIX(3, "Corrigir"),
+  VERIFY(4, "Verificar"),
+}
+
+enum class GuardianCause(val id: String, val label: String) {
+  RAM("RAM", "Memória RAM"),
+  CPU("CPU", "CPU / Carga"),
+  GPU("GPU", "GPU / Render"),
+  TEMPERATURE("TEMP", "Temperatura"),
+  STORAGE("STORAGE", "Armazenamento"),
+  POWER_SAVER("POWER", "Economia"),
+  MODULE_STATE("MODULE", "Módulos do App"),
+  STABLE("STABLE", "Estável"),
+}
+
+enum class GuardianOutcome(val label: String) {
+  RESOLVED("Resolvido"),
+  IMPROVED("Melhorou"),
+  PERSISTING("Persistiu"),
+  PREVENTIVE("Prevenção"),
+}
+
+data class GuardianReport(
+  val id: String,
+  val timestampLabel: String,
+  val packageName: String? = null,
+  val gameLabel: String? = null,
+  val detectedProblem: String,
+  val probableCause: GuardianCause,
+  val causeDetail: String,
+  val correctionApplied: String,
+  val strategyKey: String,
+  val outcome: GuardianOutcome,
+  val verificationResult: String,
+  val avoidedRepeatedStrategy: Boolean = false,
+)
+
+data class GameHealthSummary(
+  val packageName: String,
+  val gameLabel: String,
+  val lagEventsCount: Int = 0,
+  val resolvedFixesCount: Int = 0,
+  val failedFixesCount: Int = 0,
+  val lowestFpsSeen: Int? = null,
+  val lastCause: GuardianCause? = null,
+  val lastReportSummary: String = "",
+  val lastUpdatedLabel: String = "",
+)
+
 data class GuardianAlert(
   val id: String,
   val title: String,
@@ -162,11 +249,16 @@ data class GuardianAlert(
 data class GuardianState(
   val autoRepairEnabled: Boolean = true,
   val isAnalyzing: Boolean = false,
+  val currentStage: GuardianPipelineStage = GuardianPipelineStage.IDLE,
   val healthScore: Int = 100,
-  val statusSummary: String = "Sistema protegido • Monitorando bugs e travamentos em tempo real",
+  val statusSummary: String = "Sistema protegido • Detectar → Analisar → Corrigir → Verificar",
   val totalRepairsCount: Int = 0,
   val lastCheckLabel: String = "Aguardando varredura",
+  val lastCauseDetected: GuardianCause = GuardianCause.STABLE,
+  val avoidedRepeatsCount: Int = 0,
   val alerts: List<GuardianAlert> = emptyList(),
+  val reports: List<GuardianReport> = emptyList(),
+  val gameHealthMap: Map<String, GameHealthSummary> = emptyMap(),
 )
 
 data class DeviceTelemetry(

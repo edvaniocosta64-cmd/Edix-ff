@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.BoosterSettings
 import com.example.model.CoolerSpeed
+import com.example.model.GameRendererMode
 import com.example.model.GraphicsBackend
 import com.example.model.PerGameConfig
 import com.example.model.RefreshRateOption
@@ -69,12 +70,18 @@ class BoosterPreferencesRepository(private val context: Context) {
           val dpiVal = parts[1].toIntOrNull()?.takeIf { it in 400..1440 }
           val touchEnabled = parts[2].toBooleanStrictOrNull() ?: false
           val sens = (parts[3].toIntOrNull() ?: 7).coerceIn(1, 7)
+          val rendererId = parts.getOrNull(4)?.trim().orEmpty()
+          val rendererMode =
+            GameRendererMode.entries.firstOrNull { it.id == rendererId } ?: GameRendererMode.GLOBAL
+          val guardianBeta = parts.getOrNull(5)?.toBooleanStrictOrNull() ?: false
           parts[0] to
             PerGameConfig(
               packageName = parts[0],
               customDpi = dpiVal,
               touchScriptEnabled = touchEnabled,
               touchSensitivity = sens,
+              rendererMode = rendererMode,
+              guardianBetaEnabled = guardianBeta,
             )
         }.toMap()
 
@@ -249,7 +256,8 @@ class BoosterPreferencesRepository(private val context: Context) {
         .filterNot { it.startsWith("${config.packageName}|") }
         .toMutableSet()
       val dpiVal = config.customDpi?.coerceIn(400, 1440) ?: 0
-      current += "${config.packageName}|$dpiVal|${config.touchScriptEnabled}|${config.touchSensitivity.coerceIn(1, 7)}"
+      current +=
+        "${config.packageName}|$dpiVal|${config.touchScriptEnabled}|${config.touchSensitivity.coerceIn(1, 7)}|${config.rendererMode.id}|${config.guardianBetaEnabled}"
       prefs[Keys.PER_GAME_CONFIGS] = current
     }
   }

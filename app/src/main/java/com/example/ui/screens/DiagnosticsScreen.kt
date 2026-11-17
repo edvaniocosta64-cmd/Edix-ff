@@ -146,13 +146,27 @@ fun DiagnosticsScreen(
         Spacer(modifier = Modifier.height(10.dp))
         OutlinedButton(
           onClick = onRunGuardianHeal,
+          enabled = !g.isAnalyzing,
           border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.7f)),
           shape = RoundedCornerShape(12.dp),
           modifier = Modifier.fillMaxWidth().minimumInteractiveComponentSize().testTag("diagnostics_guardian_heal_button"),
         ) {
-          Icon(imageVector = Icons.Rounded.AutoFixHigh, contentDescription = null, tint = LimitlessCyan, modifier = Modifier.size(18.dp))
+          if (g.isAnalyzing) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(16.dp),
+              color = LimitlessCyan,
+              strokeWidth = 2.dp,
+            )
+          } else {
+            Icon(imageVector = Icons.Rounded.AutoFixHigh, contentDescription = null, tint = LimitlessCyan, modifier = Modifier.size(18.dp))
+          }
           Spacer(modifier = Modifier.size(6.dp))
-          Text("Executar Correção da IA Guardião (${g.totalRepairsCount} feitas)", color = ColdWhite)
+          Text(
+            text =
+              if (g.isAnalyzing) "Analisando (4 etapas)..."
+              else "Executar IA Guardião (${g.totalRepairsCount} feitas)",
+            color = ColdWhite,
+          )
         }
       }
     }

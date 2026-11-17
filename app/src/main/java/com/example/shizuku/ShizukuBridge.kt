@@ -11,8 +11,10 @@ import android.os.IBinder
 import com.example.BuildConfig
 import com.example.model.AxExtensionModule
 import com.example.model.BoosterSettings
+import com.example.model.GameRendererMode
 import com.example.model.GraphicsBackend
 import com.example.model.GraphicsRendererStatus
+import com.example.model.GuardianCause
 import com.example.resolution.ResolutionHelper
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -389,13 +391,115 @@ class ShizukuBridge(private val context: Context) {
       }
       runSafe(
         service,
-        "setprop debug.hwui.renderer ''; setprop debug.renderengine.backend ''; settings delete global angle_gl_driver_all_angle; settings delete global angle_gl_driver_selection_pkgs; settings delete global angle_gl_driver_selection_values",
+        "setprop debug.hwui.renderer ''; setprop debug.renderengine.backend ''; settings delete global angle_gl_driver_all_angle; settings delete global angle_gl_driver_selection_pkgs; settings delete global angle_gl_driver_selection_values; settings delete global game_driver_opt_in_apps; settings delete global updatable_driver_production_opt_in_apps; settings delete global updatable_driver_production_opt_out_apps",
       )
       val status = verifyGraphicsBackendStatus(addedGames)
       val msg = "Renderização restaurada para o padrão de fábrica do sistema."
       _status.update { it.copy(lastCommandSummary = msg) }
       msg to status
     }
+
+  suspend fun applyPerGameRenderer(
+    packageName: String,
+    mode: GameRendererMode,
+  ): String? =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(1000L) ?: return@withContext null
+      val safePkg = packageName.replace(Regex("[^a-zA-Z0-9._]"), "")
+      if (safePkg.isBlank()) return@withContext null
+
+      if (mode == GameRendererMode.GLOBAL) {
+        updateCommaSeparatedSetting(service, "game_driver_opt_in_apps", safePkg, add = false)
+        updateCommaSeparatedSetting(service, "updatable_driver_production_opt_in_apps", safePkg, add = false)
+        updateCommaSeparatedSetting(service, "updatable_driver_production_opt_out_apps", safePkg, add = false)
+        return@withContext "Renderização de $safePkg restaurada para o perfil Global."
+      }
+
+      runSafe(
+        service,
+        "settings delete global angle_gl_driver_all_angle; settings delete global angle_gl_driver_selection_pkgs; settings delete global angle_gl_driver_selection_values",
+      )
+
+      when (mode) {
+        GameRendererMode.SKIAVK -> {
+          runSafe(
+            service,
+            "setprop debug.hwui.renderer skiavk; setprop debug.renderengine.backend skiavkthreaded",
+          )
+          updateCommaSeparatedSetting(service, "updatable_driver_production_opt_out_apps", safePkg, add = false)
+          updateCommaSeparatedSetting(service, "game_driver_opt_in_apps", safePkg, add = false)
+          updateCommaSeparatedSetting(service, "updatable_driver_production_opt_in_apps", safePkg, add = true)
+        }
+        GameRendererMode.VULKAN -> {
+          runSafe(
+            service,
+            "setprop debug.hwui.renderer skiavk; setprop debug.renderengine.backend skiavkthreaded",
+          )
+          updateCommaSeparatedSetting(service, "updatable_driver_production_opt_out_apps", safePkg, add = false)
+          updateCommaSeparatedSetting(service, "game_driver_opt_in_apps", safePkg, add = true)
+          updateCommaSeparatedSetting(service, "updatable_driver_production_opt_in_apps", safePkg, add = true)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runSafe(service, "cmd game mode performance '$safePkg'")
+          }
+        }
+        GameRendererMode.SKIAGL -> {
+          runSafe(
+            service,
+            "setprop debug.hwui.renderer skiagl; setprop debug.renderengine.backend skiaglthreaded",
+          )
+          updateCommaSeparatedSetting(service, "game_driver_opt_in_apps", safePkg, add = false)
+          updateCommaSeparatedSetting(service, "updatable_driver_production_opt_in_apps", safePkg, add = false)
+        }
+        GameRendererMode.GLOBAL -> Unit
+      }
+
+      val summary = "Render ${mode.label} aplicado em $safePkg"
+      _status.update { it.copy(lastCommandSummary = summary) }
+      summary
+    }
+
+  suspend fun clearPerGameDriverOptIn(packageName: String): Boolean =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(600L) ?: return@withContext false
+      val safePkg = packageName.replace(Regex("[^a-zA-Z0-9._]"), "")
+      if (safePkg.isBlank()) return@withContext false
+      updateCommaSeparatedSetting(service, "game_driver_opt_in_apps", safePkg, add = false)
+      updateCommaSeparatedSetting(service, "updatable_driver_production_opt_in_apps", safePkg, add = false)
+      updateCommaSeparatedSetting(service, "updatable_driver_production_opt_out_apps", safePkg, add = false)
+      true
+    }
+
+  private fun updateCommaSeparatedSetting(
+    service: IShizukuShellService,
+    key: String,
+    pkg: String,
+    add: Boolean,
+  ) {
+    val existing =
+      readPropValue(service, "settings get global $key")
+        .split(",")
+        .map { it.trim() }
+        .filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+        .toMutableList()
+    val changed =
+      if (add) {
+        if (pkg !in existing) {
+          existing += pkg
+          true
+        } else {
+          false
+        }
+      } else {
+        existing.removeAll { it == pkg }
+      }
+    if (!changed) return
+    if (existing.isEmpty()) {
+      runSafe(service, "settings delete global $key")
+    } else {
+      val joined = existing.distinct().joinToString(",")
+      runSafe(service, "settings put global $key '$joined'")
+    }
+  }
 
   suspend fun probeHardwareMaxHzViaShizuku(): Int? =
     withContext(Dispatchers.IO) {
@@ -1026,6 +1130,201 @@ class ShizukuBridge(private val context: Context) {
         fixed += "Cache global e processos pesados em 2º plano limpos sem desligar otimizações"
       }
       fixed
+    }
+
+  suspend fun healGameStutterBeta(
+    packageName: String,
+    targetHz: Int = 120,
+  ): List<String> =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(600L) ?: return@withContext emptyList()
+      val safePkg = packageName.replace(Regex("[^a-zA-Z0-9._]"), "")
+      val clampedHz = targetHz.coerceIn(60, 165)
+      val fixed = mutableListOf<String>()
+
+      runSafe(service, "settings put global low_power 0; cmd power set-adaptive-power-saver-enabled false")
+      if (safePkg.isNotBlank()) {
+        runSafe(service, "am set-standby-bucket '$safePkg' active")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          runSafe(
+            service,
+            "cmd game mode performance '$safePkg'; cmd game set --mode performance --fps $clampedHz '$safePkg' 2>/dev/null || true",
+          )
+          fixed += "GameMode ${clampedHz}FPS re-priorizado em ${safePkg.substringAfterLast('.')}"
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          runSafe(service, "cmd game mode performance '$safePkg'")
+          fixed += "Prioridade GameMode reforçada em ${safePkg.substringAfterLast('.')}"
+        }
+      }
+      runSafe(service, "am kill-all; pm trim-caches 2147483648")
+      fixed += "2º plano e caches limpos ao vivo sem desfazer DPI/Touch/Render"
+      fixed
+    }
+
+  suspend fun executeAdaptiveGuardianFix(
+    cause: GuardianCause,
+    strategyKey: String,
+    activePackage: String? = null,
+    targetHz: Int = 120,
+    perGameRenderer: GameRendererMode? = null,
+    isInGame: Boolean = false,
+  ): List<String> =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(650L) ?: return@withContext emptyList()
+      val safePkg = activePackage?.replace(Regex("[^a-zA-Z0-9._]"), "")?.takeIf { it.isNotBlank() }
+      val clampedHz = targetHz.coerceIn(60, 165)
+      val actions = mutableListOf<String>()
+
+      when (strategyKey) {
+        "RAM_TRIM_LIGHT" -> {
+          runSafe(service, "pm trim-caches 1073741824")
+          actions += "Trim de caches leves (1 GB) sem interromper o jogo"
+        }
+        "RAM_AGGRESSIVE_KILL" -> {
+          runSafe(service, "am kill-all; pm trim-caches 2147483648")
+          actions += "Processos ociosos encerrados e 2 GB de cache liberados"
+        }
+        "CPU_GAMEMODE_BOOST" -> {
+          runSafe(service, "settings put global low_power 0; cmd power set-adaptive-power-saver-enabled false")
+          if (safePkg != null) {
+            runSafe(service, "am set-standby-bucket '$safePkg' active")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+              runSafe(
+                service,
+                "cmd game mode performance '$safePkg'; cmd game set --mode performance --fps $clampedHz '$safePkg' 2>/dev/null || true",
+              )
+              actions += "GameMode ${clampedHz}FPS e prioridade ativa em ${safePkg.substringAfterLast('.')}"
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+              runSafe(service, "cmd game mode performance '$safePkg'")
+              actions += "Prioridade GameMode aplicada em ${safePkg.substringAfterLast('.')}"
+            } else {
+              actions += "Prioridade de processo ativo aplicada em ${safePkg.substringAfterLast('.')}"
+            }
+          } else {
+            actions += "Economia adaptativa suspensa para estabilizar CPU"
+          }
+        }
+        "CPU_PERF_LOCK_AND_TRIM" -> {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runSafe(service, "cmd power set-fixed-performance-mode-enabled true")
+            actions += "Modo de performance fixa ativado na CPU"
+          }
+          if (safePkg != null) {
+            runSafe(service, "am set-standby-bucket '$safePkg' active")
+          }
+          runSafe(service, "am kill-all")
+          actions += "Concorrência de CPU em 2º plano reduzida"
+        }
+        "GPU_SF_ZERO_LAG" -> {
+          runSafe(
+            service,
+            "setprop debug.sf.disable_backpressure 1; setprop debug.sf.latch_unsignaled 1",
+          )
+          actions += "Latência SurfaceFlinger reduzida ao vivo (sem fechar o jogo)"
+          if (safePkg != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runSafe(service, "cmd game set --mode performance --fps $clampedHz '$safePkg' 2>/dev/null || true")
+            actions += "Meta de ${clampedHz} FPS reforçada"
+          }
+        }
+        "GPU_REASSERT_RENDERER" -> {
+          when (perGameRenderer) {
+            GameRendererMode.SKIAVK,
+            GameRendererMode.VULKAN -> {
+              runSafe(service, "setprop debug.hwui.renderer skiavk; setprop debug.renderengine.backend skiavkthreaded")
+              actions += "Pipeline Vulkan/SkiaVK reestabilizado ao vivo"
+            }
+            GameRendererMode.SKIAGL -> {
+              runSafe(service, "setprop debug.hwui.renderer skiagl; setprop debug.renderengine.backend skiaglthreaded")
+              actions += "Pipeline SkiaGL reestabilizado ao vivo"
+            }
+            else -> {
+              runSafe(service, "setprop debug.sf.disable_backpressure 1; pm trim-caches 536870912")
+              actions += "Fila gráfica GPU aliviada ao vivo"
+            }
+          }
+          if (safePkg != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runSafe(service, "cmd game mode performance '$safePkg'")
+          }
+        }
+        "TEMP_RELIEF_SAFE" -> {
+          runSafe(service, "am kill-all; pm trim-caches 2147483648")
+          actions += "2º plano e caches encerrados p/ aliviar calor mantendo Boost/DPI/Render"
+        }
+        "TEMP_COOL_FIXED_PERF" -> {
+          runSafe(service, "am kill-all; pm trim-caches 2147483648; cmd activity idle-maintenance 2>/dev/null || true")
+          actions += "Manutenção ociosa e corte de processos em 2º plano (proteções e otimizações preservadas)"
+        }
+        "STORAGE_TRIM_DEEP" -> {
+          runSafe(service, "pm trim-caches 4294967296")
+          actions += "Limpeza profunda de cache de armazenamento (até 4 GB)"
+        }
+        "POWER_LIFT_SAVERS" -> {
+          runSafe(
+            service,
+            "settings put global low_power 0; settings put global low_power_sticky 0; cmd power set-adaptive-power-saver-enabled false; settings put system min_refresh_rate ${clampedHz}.0; settings put system peak_refresh_rate ${clampedHz}.0",
+          )
+          actions += "Economia de energia suspensa e ${clampedHz}Hz restaurado"
+        }
+        "MODULE_REASSERT_BOOST" -> {
+          runSafe(
+            service,
+            "settings put global low_power 0; settings put system min_refresh_rate ${clampedHz}.0; settings put system peak_refresh_rate ${clampedHz}.0",
+          )
+          if (safePkg != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runSafe(service, "cmd game mode performance '$safePkg'")
+          }
+          actions += "Parâmetros do Boost e ${clampedHz}Hz reestabelecidos no sistema"
+        }
+        else -> {
+          runSafe(service, "pm trim-caches 1073741824")
+          actions +=
+            if (isInGame) "Ajuste leve ao vivo (${cause.label}) sem afetar a partida"
+            else "Otimização adaptativa aplicada (${cause.label})"
+        }
+      }
+      if (actions.isNotEmpty()) {
+        _status.update { it.copy(lastCommandSummary = "IA Guardião: ${actions.first()}") }
+      }
+      actions
+    }
+
+  suspend fun checkAndRepairBoostDriftViaShizuku(
+    settings: BoosterSettings,
+    targetHz: Int,
+  ): List<String> =
+    withContext(Dispatchers.IO) {
+      if (!settings.boostActive) return@withContext emptyList()
+      val service = ensureBound(500L) ?: return@withContext emptyList()
+      val repaired = mutableListOf<String>()
+      val clampedHz = targetHz.coerceIn(60, 165)
+
+      val lowPower = readPropValue(service, "settings get global low_power")
+      if (lowPower == "1") {
+        runSafe(service, "settings put global low_power 0")
+        repaired += "Economia forçada pelo sistema revertida"
+      }
+
+      val minHzRaw = readPropValue(service, "settings get system min_refresh_rate").toFloatOrNull()?.toInt()
+      val peakHzRaw = readPropValue(service, "settings get system peak_refresh_rate").toFloatOrNull()?.toInt()
+      if ((minHzRaw != null && minHzRaw < clampedHz - 2) || (peakHzRaw != null && peakHzRaw < clampedHz - 2)) {
+        runSafe(
+          service,
+          "settings put system min_refresh_rate ${clampedHz}.0; settings put system peak_refresh_rate ${clampedHz}.0; settings put system user_refresh_rate ${clampedHz}.0",
+        )
+        repaired += "Taxa ${clampedHz}Hz re-forçada após queda automática"
+      }
+
+      val winScale = readPropValue(service, "settings get global window_animation_scale").toFloatOrNull()
+      if (winScale != null && winScale > settings.animationScale + 0.15f) {
+        val animScale = String.format(Locale.US, "%.2f", settings.animationScale)
+        runSafe(
+          service,
+          "settings put global window_animation_scale $animScale; settings put global transition_animation_scale $animScale; settings put global animator_duration_scale $animScale",
+        )
+        repaired += "Escala de animação ${animScale}x restaurada"
+      }
+
+      repaired
     }
 
   suspend fun getTopResumedPackage(): String? =

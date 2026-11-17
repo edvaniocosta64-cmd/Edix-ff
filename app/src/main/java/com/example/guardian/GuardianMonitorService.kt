@@ -17,6 +17,7 @@ import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.model.GuardianAlert
 import com.example.model.GuardianSeverity
+import com.example.overlay.GameDpiSessionService
 import com.example.shizuku.ShizukuBridge
 import com.example.shizuku.ShizukuConnectionState
 import java.text.SimpleDateFormat
@@ -154,6 +155,7 @@ class GuardianMonitorService : Service() {
   }
 
   private suspend fun run24hLoop() {
+    GuardianMemoryStore.ensureLoaded(this)
     // Allow initial Shizuku bind settle
     delay(1200L)
     var loopTick = 0
@@ -184,51 +186,64 @@ class GuardianMonitorService : Service() {
         }
       val probe = shizukuBridge.probeLiveStuttersViaShizuku()
       val now = System.currentTimeMillis()
-      val ts = timeFormat.format(Date(now))
 
-      val ramHigh = telemetry.isLowMemory || telemetry.ramPercent >= 82
-      val stutterDetected = probe.hasAnrOrLag || probe.loadAvgHigh
-      val batterySaverLimiting = telemetry.isPowerSaveMode && (settings?.boostActive == true)
-      val cooldownOk = (now - lastFixAtMs) >= 22_000L
+      val fgPkg = probe.foregroundPackage
+      val fgGameConfig = fgPkg?.let { settings?.perGameConfigs?.get(it) }
+      val betaHandledBySession =
+        GameDpiSessionService.isRunning &&
+          GameDpiSessionService.isBetaGuarding &&
+          fgPkg == GameDpiSessionService.activeTargetPackage
+      val fgGame =
+        fgPkg?.takeIf { pkg ->
+          settings?.addedGamePackages?.contains(pkg) == true || fgGameConfig?.guardianBetaEnabled == true
+        }
+      val cooldownOk = (now - lastFixAtMs) >= 20_000L
 
       val probeText =
-        if (probe.summaryNote.isNotBlank()) "24h Shizuku: ${probe.summaryNote} • RAM ${telemetry.ramPercent}%"
-        else "24h Shizuku ativo • RAM ${telemetry.ramPercent}% • ${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C"
+        when {
+          fgGameConfig?.guardianBetaEnabled == true && probe.summaryNote.isNotBlank() ->
+            "IA Beta (${fgPkg.substringAfterLast('.')}): ${probe.summaryNote} • RAM ${telemetry.ramPercent}%"
+          probe.summaryNote.isNotBlank() ->
+            "24h Shizuku: ${probe.summaryNote} • RAM ${telemetry.ramPercent}%"
+          else ->
+            "24h Shizuku ativo • RAM ${telemetry.ramPercent}% • ${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C"
+        }
 
-      if ((ramHigh || stutterDetected || batterySaverLimiting) && cooldownOk) {
-        lastFixAtMs = now
-        val freedMb = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
-        val fgGame =
-          probe.foregroundPackage?.takeIf { pkg -> settings?.addedGamePackages?.contains(pkg) == true }
-        val fixedList =
-          shizukuBridge.runGuardianMaintenance(
-            trimMemoryAndCache = ramHigh || stutterDetected,
-            liftBatterySaver = batterySaverLimiting,
-            boostActivePackage = fgGame,
+      // Autorreparo seguro em 2º plano caso o Android tenha revertido Hz/Animação/Economia
+      if (loopTick % 6 == 0 && settings?.boostActive == true && !betaHandledBySession) {
+        val targetHz = maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60)
+        shizukuBridge.checkAndRepairBoostDriftViaShizuku(settings, targetHz)
+      }
+
+      if (cooldownOk && !betaHandledBySession) {
+        val pipelineResult =
+          GuardianDiagnosticPipeline.runFourStageCycle(
+            context = this,
+            telemetryBefore = telemetry,
+            probeBefore = probe,
+            shizukuConnected = true,
+            activePackage = fgGame ?: fgPkg,
+            gameLabel = fgGame?.substringAfterLast('.'),
+            targetHz = settings?.targetRefreshRate?.hz ?: 120,
+            perGameRenderer = fgGameConfig?.rendererMode,
+            isInGame = fgGame != null,
+            telemetryManager = telemetryManager,
+            shizukuBridge = shizukuBridge,
+            forceDeepAnalyze = false,
           )
-        val reason =
-          when {
-            probe.hasAnrOrLag -> "Travamento/queda de FPS detectado (${probe.liveFps ?: "--"} FPS)"
-            ramHigh -> "RAM alta (${telemetry.ramPercent}%)"
-            probe.loadAvgHigh -> "Pico de carga na CPU"
-            else -> "Economia de bateria limitando Hz"
+        if (pipelineResult != null) {
+          lastFixAtMs = System.currentTimeMillis()
+          GuardianLiveBus.recordFix(pipelineResult.alert, probeText)
+          updateNotification(
+            "IA 24h • ${pipelineResult.report.outcome.label} (${GuardianLiveBus.snapshot.value.repairs24hCount})",
+            "${pipelineResult.report.detectedProblem} → ${pipelineResult.report.verificationResult}",
+          )
+        } else {
+          GuardianLiveBus.setRunning(true, probeText)
+          if (loopTick % 15 == 1) {
+            updateNotification("IA Guardião 24h • Ativa via Shizuku", probeText)
           }
-        val detail =
-          "$reason → ${fixedList.joinToString("; ").ifBlank { "Caches limpos (${freedMb} MB)" }}. Suas otimizações foram mantidas."
-        val alert =
-          GuardianAlert(
-            id = "guardian_24h_${if (probe.hasAnrOrLag) "lag" else "ram"}",
-            title = "IA 24h corrigiu em tempo real",
-            detail = detail,
-            severity = GuardianSeverity.FIXED,
-            timestampLabel = ts,
-            autoFixed = true,
-          )
-        GuardianLiveBus.recordFix(alert, probeText)
-        updateNotification(
-          "IA 24h via Shizuku • ${GuardianLiveBus.snapshot.value.repairs24hCount} correções",
-          detail,
-        )
+        }
       } else {
         GuardianLiveBus.setRunning(true, probeText)
         if (loopTick % 15 == 1) {
