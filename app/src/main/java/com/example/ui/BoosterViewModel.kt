@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.audio.BackgroundMusicEngine
 import com.example.audio.DomainVoiceEngine
 import com.example.ax.AxExtensionManager
+import com.example.data.AppCrashLogger
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
 import com.example.guardian.GuardianLiveBus
@@ -82,6 +83,8 @@ data class BoosterUiState(
   val isImportingAxPlugin: Boolean = false,
   val canWriteSystemSettings: Boolean = false,
   val canDrawOverlays: Boolean = false,
+  val hasCrashOrErrorLogs: Boolean = false,
+  val lastCrashPreview: String? = null,
   val guardianState: GuardianState = GuardianState(),
 )
 
@@ -105,8 +108,10 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   private var hasSyncedInitialMusic = false
 
   init {
+    AppCrashLogger.install(application)
     GuardianMemoryStore.ensureLoaded(application)
     refreshSpecialPermissions()
+    refreshCrashLogState()
     viewModelScope.launch {
       GuardianMemoryStore.snapshot.collect { mem ->
         _uiState.update { state ->
@@ -1664,6 +1669,58 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       } catch (_: Exception) {
         _uiState.update { it.copy(statusBanner = "Abra as Configurações do sistema.") }
       }
+    }
+  }
+
+  private fun refreshCrashLogState() {
+    val app = getApplication<Application>()
+    val crash = AppCrashLogger.readLastCrash(app)
+    val events = AppCrashLogger.readRecentEvents(app)
+    _uiState.update {
+      it.copy(
+        hasCrashOrErrorLogs = crash != null || events.isNotEmpty(),
+        lastCrashPreview = crash?.lineSequence()?.take(4)?.joinToString("\n"),
+      )
+    }
+  }
+
+  fun buildDiagnosticReportText(): String =
+    AppCrashLogger.buildFullDiagnosticReport(getApplication(), _uiState.value)
+
+  fun copyDiagnosticReportToClipboard(context: Context) {
+    val text = buildDiagnosticReportText()
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    val clip = android.content.ClipData.newPlainText("Infinit Booster Raio-X", text)
+    clipboard.setPrimaryClip(clip)
+    telemetryManager.pulseHaptic(false)
+    _uiState.update {
+      it.copy(statusBanner = "Raio-X copiado! Cole aqui no chat para a IA analisar seu aparelho.")
+    }
+  }
+
+  fun shareDiagnosticReport(context: Context) {
+    val text = buildDiagnosticReportText()
+    runCatching {
+      val shareIntent =
+        Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_SUBJECT, "Infinit Booster • Raio-X do Aparelho")
+          putExtra(Intent.EXTRA_TEXT, text)
+        }
+      val chooser =
+        Intent.createChooser(shareIntent, "Enviar Raio-X de Diagnóstico").apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+      context.startActivity(chooser)
+    }
+  }
+
+  fun clearDiagnosticCrashLogs() {
+    AppCrashLogger.clearLogs(getApplication())
+    refreshCrashLogState()
+    telemetryManager.pulseHaptic(false)
+    _uiState.update {
+      it.copy(statusBanner = "Histórico de erros e crashes limpo.")
     }
   }
 

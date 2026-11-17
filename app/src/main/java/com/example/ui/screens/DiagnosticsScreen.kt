@@ -1,7 +1,10 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,24 +20,37 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,9 +79,17 @@ fun DiagnosticsScreen(
   state: BoosterUiState,
   onRunScan: () -> Unit,
   onRunGuardianHeal: () -> Unit,
+  onBuildXRayText: () -> String,
+  onCopyXRay: () -> Unit,
+  onShareXRay: () -> Unit,
+  onClearXRayLogs: () -> Unit,
   onDiagnosticAction: (DiagnosticAction) -> Unit,
 ) {
   val telemetry = state.telemetry
+  var creatorPanelVisible by remember { mutableStateOf(false) }
+  var showXRayPreview by remember { mutableStateOf(false) }
+  var secretTapCount by remember { mutableIntStateOf(0) }
+  var lastSecretTapMs by remember { mutableLongStateOf(0L) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -171,10 +195,177 @@ fun DiagnosticsScreen(
       }
     }
 
-    // Hardware Identity Card
+    // Raio-X Secreto do Criador (oculto por padrão — desbloqueado com 7 toques em Verificação do Aparelho)
+    if (creatorPanelVisible) {
+      item {
+        val logAccent = if (state.hasCrashOrErrorLogs) WarningAmber else LimitlessCyan
+        VoidGlassCard(
+          modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp),
+          borderColor = logAccent.copy(alpha = 0.55f),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.weight(1f),
+            ) {
+              Icon(imageVector = Icons.Rounded.BugReport, contentDescription = null, tint = logAccent)
+              Column {
+                Text(
+                  text = "Modo Criador • Raio-X Oculto",
+                  style = MaterialTheme.typography.titleMedium,
+                  color = ColdWhite,
+                )
+                Text(
+                  text =
+                    if (state.hasCrashOrErrorLogs)
+                      "Erros ou crash capturados — copie e cole no chat para eu analisar"
+                    else
+                      "Relatório técnico visível apenas neste painel oculto",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MutedLavender,
+                )
+              }
+            }
+            IconButton(
+              onClick = {
+                creatorPanelVisible = false
+                showXRayPreview = false
+                secretTapCount = 0
+              },
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("hide_creator_xray_button"),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = "Ocultar Raio-X do Criador",
+                tint = MutedLavender,
+              )
+            }
+          }
+
+          if (state.lastCrashPreview != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = VoidObsidian.copy(alpha = 0.85f),
+              border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.55f)),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = state.lastCrashPreview,
+                style = MaterialTheme.typography.labelSmall,
+                color = WarningAmber,
+                modifier = Modifier.padding(10.dp),
+              )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Button(
+              onClick = onCopyXRay,
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = HollowPurple),
+              modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("copy_xray_button"),
+            ) {
+              Icon(imageVector = Icons.Rounded.ContentCopy, contentDescription = null, tint = ColdWhite, modifier = Modifier.size(16.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text("Copiar Raio-X", color = ColdWhite)
+            }
+            OutlinedButton(
+              onClick = onShareXRay,
+              border = BorderStroke(1.dp, LimitlessCyan.copy(alpha = 0.65f)),
+              shape = RoundedCornerShape(12.dp),
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("share_xray_button"),
+            ) {
+              Icon(imageVector = Icons.Rounded.Share, contentDescription = "Compartilhar Raio-X", tint = LimitlessCyan, modifier = Modifier.size(16.dp))
+              Spacer(modifier = Modifier.size(6.dp))
+              Text("Enviar", color = ColdWhite)
+            }
+          }
+
+          Spacer(modifier = Modifier.height(6.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            TextButton(
+              onClick = { showXRayPreview = !showXRayPreview },
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("toggle_xray_preview_button"),
+            ) {
+              Text(
+                text = if (showXRayPreview) "Ocultar Prévia" else "Ver Raio-X na Tela",
+                color = LimitlessCyan,
+              )
+            }
+            if (state.hasCrashOrErrorLogs) {
+              TextButton(
+                onClick = onClearXRayLogs,
+                modifier = Modifier.minimumInteractiveComponentSize().testTag("clear_xray_logs_button"),
+              ) {
+                Icon(imageVector = Icons.Rounded.DeleteOutline, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.size(4.dp))
+                Text("Limpar Logs", color = WarningAmber)
+              }
+            }
+          }
+
+          if (showXRayPreview) {
+            val previewText = remember(state, showXRayPreview) { onBuildXRayText() }
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = VoidObsidian.copy(alpha = 0.9f),
+              border = BorderStroke(1.dp, VoidBorder),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = previewText,
+                style = MaterialTheme.typography.labelSmall,
+                color = MutedLavender,
+                modifier = Modifier.padding(10.dp),
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // Hardware Identity Card (tap header 7x without ripple to toggle Creator Raio-X)
     item {
+      val noRippleInteraction = remember { MutableInteractionSource() }
       VoidGlassCard(modifier = Modifier.fillMaxWidth().widthIn(max = 680.dp)) {
-        SectionHeader(title = "Verificação do Aparelho", subtitle = telemetry.deviceName)
+        Box(
+          modifier =
+            Modifier.fillMaxWidth()
+              .clickable(
+                interactionSource = noRippleInteraction,
+                indication = null,
+              ) {
+                val now = System.currentTimeMillis()
+                if (now - lastSecretTapMs > 2500L) {
+                  secretTapCount = 1
+                } else {
+                  secretTapCount++
+                }
+                lastSecretTapMs = now
+                if (secretTapCount >= 7) {
+                  creatorPanelVisible = !creatorPanelVisible
+                  if (!creatorPanelVisible) showXRayPreview = false
+                  secretTapCount = 0
+                }
+              }
+              .testTag("device_spec_secret_header"),
+        ) {
+          SectionHeader(title = "Verificação do Aparelho", subtitle = telemetry.deviceName)
+        }
         Spacer(modifier = Modifier.height(10.dp))
         SpecRow("Sistema", "${telemetry.androidVersion} (API ${telemetry.sdkInt})")
         SpecRow("Arquitetura CPU", "${telemetry.cpuAbi} • ${telemetry.cpuCores} Núcleos")

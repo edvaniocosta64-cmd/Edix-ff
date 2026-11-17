@@ -74,6 +74,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AppCrashLogger
 import com.example.model.AppTab
 import com.example.ui.BoosterViewModel
 import com.example.ui.components.DomainExpansionOverlay
@@ -97,6 +98,7 @@ import kotlin.math.roundToInt
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    AppCrashLogger.install(applicationContext)
     enableEdgeToEdge(
       statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
@@ -388,6 +390,10 @@ fun InfinitBoosterApp(viewModel: BoosterViewModel = viewModel()) {
                     state = state,
                     onRunScan = { viewModel.runDiagnosticScan() },
                     onRunGuardianHeal = { viewModel.runGuardianManualHeal() },
+                    onBuildXRayText = { viewModel.buildDiagnosticReportText() },
+                    onCopyXRay = { viewModel.copyDiagnosticReportToClipboard(context) },
+                    onShareXRay = { viewModel.shareDiagnosticReport(context) },
+                    onClearXRayLogs = { viewModel.clearDiagnosticCrashLogs() },
                     onDiagnosticAction = { action ->
                       viewModel.executeDiagnosticAction(
                         action = action,

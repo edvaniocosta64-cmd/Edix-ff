@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import com.example.BuildConfig
+import com.example.data.AppCrashLogger
 import com.example.model.AxExtensionModule
 import com.example.model.BoosterSettings
 import com.example.model.GameRendererMode
@@ -242,6 +243,7 @@ class ShizukuBridge(private val context: Context) {
       }
       Shizuku.bindUserService(userServiceArgs, serviceConnection)
     } catch (e: Exception) {
+      AppCrashLogger.logEvent(context, "ShizukuBind", e.message ?: "erro ao vincular")
       _status.update {
         it.copy(
           connectionState = ShizukuConnectionState.NOT_RUNNING,
@@ -1357,6 +1359,7 @@ class ShizukuBridge(private val context: Context) {
     return try {
       service.runShellCommand(cmd).take(80)
     } catch (e: Exception) {
+      AppCrashLogger.logEvent(context, "ShizukuCmd", "${cmd.take(40)} -> ${e.message ?: "erro"}")
       "err:${e.message}"
     }
   }
