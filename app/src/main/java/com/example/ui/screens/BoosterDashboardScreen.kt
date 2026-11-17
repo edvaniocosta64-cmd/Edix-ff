@@ -280,12 +280,13 @@ fun BoosterDashboardScreen(
     // Hollow Purple Reactor Hero
     item {
       val effectiveTargetHz =
-        if (settings.boostActive) maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz)
+        if (settings.boostActive) maxOf(telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60)
         else settings.targetRefreshRate.hz
       HollowPurpleReactorCard(
         boostActive = settings.boostActive,
         liveFps = telemetry.liveFps,
         targetHz = effectiveTargetHz,
+        currentDisplayHz = telemetry.currentDisplayHz,
         maxHardwareHz = telemetry.maxDisplayHz,
         backendBadge = settings.graphicsBackend.title,
         tempC = telemetry.batteryTempC,
@@ -457,7 +458,9 @@ fun BoosterDashboardScreen(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          RefreshRateOption.entries.forEach { option ->
+          val visibleHzOptions =
+            RefreshRateOption.entries.filter { it.hz <= 120 || telemetry.maxDisplayHz >= 144 }
+          visibleHzOptions.forEach { option ->
             val selected = settings.targetRefreshRate == option
             val bgColor by
               animateColorAsState(
@@ -1006,12 +1009,12 @@ private fun GuardianAiCard(
         )
         Column {
           Text(
-            text = "IA Guardião • Anti-Bug",
+            text = "IA Guardião • 24h via Shizuku",
             style = MaterialTheme.typography.titleMedium,
             color = ColdWhite,
           )
           Text(
-            text = "Motor local sem API • Silenciosa (só avisos)",
+            text = "IA Guardião corrigindo bugs (não desativa suas otimizações)",
             style = MaterialTheme.typography.labelSmall,
             color = LimitlessCyan,
           )
@@ -1057,12 +1060,12 @@ private fun GuardianAiCard(
     ) {
       Column(modifier = Modifier.weight(1f)) {
         Text(
-          text = "Auto-Reparo Contínuo (Sem API)",
+          text = "Monitor 24h Automático (Só com Shizuku)",
           style = MaterialTheme.typography.titleSmall,
           color = ColdWhite,
         )
         Text(
-          text = "Corrige bugs, quedas de FPS, RAM e serviços automaticamente",
+          text = "Ativa sozinho em 2º plano quando o Shizuku está conectado e melhora travamentos sem resetar suas opções",
           style = MaterialTheme.typography.bodySmall,
           color = MutedLavender,
         )
@@ -1216,6 +1219,7 @@ private fun HollowPurpleReactorCard(
   boostActive: Boolean,
   liveFps: Int,
   targetHz: Int,
+  currentDisplayHz: Int,
   maxHardwareHz: Int,
   backendBadge: String,
   tempC: Float,
@@ -1352,9 +1356,9 @@ private fun HollowPurpleReactorCard(
       Text(
         text =
           if (boostActive) {
-            "$backendBadge • MÁX ${targetHz}Hz FORÇADO • DESEMPENHO TOTAL • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
+            "$backendBadge • MÁX ${targetHz}Hz + FPS FORÇADO • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
           } else {
-            "$backendBadge • Alvo ${targetHz}Hz (Máx tela: ${maxHardwareHz}Hz) • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
+            "$backendBadge • Tela ${currentDisplayHz}Hz (Máx: ${maxHardwareHz}Hz) • RAM $ramPercent% • ${String.format("%.1f", tempC)}°C"
           },
         style = MaterialTheme.typography.labelMedium,
         color = if (boostActive) LimitlessCyan else MutedLavender,

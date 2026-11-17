@@ -38,6 +38,7 @@ class InfinitGuardianEngine(private val context: Context) {
   private var lastFrameHealAtMs = 0L
   private var lastShizukuRebindAtMs = 0L
   private var bindingStartedAtMs = 0L
+  private val seenBackgroundAlertKeys = mutableSetOf<String>()
 
   suspend fun auditAndHeal(
     telemetry: DeviceTelemetry,
@@ -248,37 +249,16 @@ class InfinitGuardianEngine(private val context: Context) {
       bindingStartedAtMs = 0L
     }
 
-    if (settings.rootTotalPerformanceEnabled &&
-      (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !shizukuConnected)
-    ) {
-      activeIssuePenalty += 12
-      if (shouldHeal && (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
-          shizukuStatus.connectionState == ShizukuConnectionState.NOT_INSTALLED ||
-          shizukuStatus.connectionState == ShizukuConnectionState.NOT_RUNNING ||
-          shizukuStatus.connectionState == ShizukuConnectionState.PERMISSION_REQUIRED)
-      ) {
-        repository.setRootTotalPerformanceEnabled(false)
-        totalRepairsCount++
-        newAlerts +=
-          GuardianAlert(
-            id = "root_perf_guard",
-            title = "Desempenho Total ajustado (Shizuku OFF)",
-            detail = "O modo estava marcado sem Shizuku conectado; a IA desarmou com segurança para evitar travas.",
-            severity = GuardianSeverity.FIXED,
-            timestampLabel = timestamp,
-            autoFixed = true,
-          )
-        notices += "IA ajustou Desempenho Total (Shizuku desconectado)"
-      } else {
-        newAlerts +=
-          GuardianAlert(
-            id = "root_perf_warn",
-            title = "Aviso: Shizuku aguardando conexão",
-            detail = "Conecte ou autorize o Shizuku para manter o Desempenho Total funcionando.",
-            severity = GuardianSeverity.WARNING,
-            timestampLabel = timestamp,
-          )
-      }
+    if (settings.rootTotalPerformanceEnabled && !shizukuConnected) {
+      activeIssuePenalty += 8
+      newAlerts +=
+        GuardianAlert(
+          id = "root_perf_warn",
+          title = "Aviso: Shizuku desconectado",
+          detail = "Suas otimizações foram mantidas salvas. Conecte o Shizuku para o monitoramento 24h voltar ao ativo.",
+          severity = GuardianSeverity.INFO,
+          timestampLabel = timestamp,
+        )
     }
 
     // 6. RAM Pressure / Travamento Risk
@@ -293,7 +273,7 @@ class InfinitGuardianEngine(private val context: Context) {
           shizukuBridge.runGuardianMaintenance(
             trimMemoryAndCache = true,
             liftBatterySaver = false,
-            coolThermalLoad = false,
+            boostActivePackage = null,
           )
         }
         totalRepairsCount++
@@ -337,7 +317,7 @@ class InfinitGuardianEngine(private val context: Context) {
           shizukuBridge.runGuardianMaintenance(
             trimMemoryAndCache = true,
             liftBatterySaver = false,
-            coolThermalLoad = false,
+            boostActivePackage = null,
           )
         }
         totalRepairsCount++
@@ -364,41 +344,41 @@ class InfinitGuardianEngine(private val context: Context) {
       }
     }
 
-    // 8. Thermal Overload Protection & Warning
+    // 8. Thermal Advisory & Safe Background Cleanup (NEVER disables user optimizations!)
     val overheating =
       telemetry.batteryTempC >= 41.5f || telemetry.thermalSeverity == BottleneckSeverity.CRITICAL
     if (overheating) {
-      activeIssuePenalty += 22
+      activeIssuePenalty += 16
       val extremeHeat = telemetry.batteryTempC >= 43.0f
-      if (shouldHeal && extremeHeat && (settings.ignoreThermalLimit || settings.rootTotalPerformanceEnabled)) {
-        repository.setIgnoreThermalLimit(false)
-        repository.setRootTotalPerformanceEnabled(false)
+      if (shouldHeal && extremeHeat && (now - lastMemoryHealAtMs >= 25_000L)) {
+        lastMemoryHealAtMs = now
+        val freed = withContext(Dispatchers.IO) { telemetryManager.performMemoryAndCacheCleanup() }
         if (shizukuConnected) {
           shizukuBridge.runGuardianMaintenance(
-            trimMemoryAndCache = false,
+            trimMemoryAndCache = true,
             liftBatterySaver = false,
-            coolThermalLoad = true,
+            boostActivePackage = null,
           )
         }
         totalRepairsCount++
         newAlerts +=
           GuardianAlert(
-            id = "thermal_protect",
-            title = "Proteção Térmica Acionada (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
+            id = "thermal_relief_clean",
+            title = "Alívio térmico sem desligar otimizações (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
             detail =
-              "Calor extremo detectado! IA desativou o over-boost térmico para evitar queda brusca de FPS e desgaste.",
+              "2º plano e ${freed} MB de cache foram limpos para reduzir aquecimento mantendo seu Boost, Renderização e Desempenho Total ativos.",
             severity = GuardianSeverity.FIXED,
             timestampLabel = timestamp,
             autoFixed = true,
           )
-        notices += "Aviso: IA reduziu carga térmica (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)"
+        notices += "IA limpou 2º plano pelo calor (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C) sem resetar ajustes"
       } else {
         newAlerts +=
           GuardianAlert(
             id = "thermal_warn",
             title = "Aviso: Aparelho quente (${String.format(Locale.US, "%.1f", telemetry.batteryTempC)}°C)",
             detail =
-              "Temperatura alta pode causar throttling nos jogos. Recomenda-se abrir o Cooler Criogênico.",
+              "Temperatura alta detectada. Suas otimizações continuam ativas; use o Cooler Criogênico se desejar resfriar.",
             severity = GuardianSeverity.WARNING,
             timestampLabel = timestamp,
           )
@@ -412,7 +392,7 @@ class InfinitGuardianEngine(private val context: Context) {
         shizukuBridge.runGuardianMaintenance(
           trimMemoryAndCache = false,
           liftBatterySaver = true,
-          coolThermalLoad = false,
+          boostActivePackage = null,
         )
         totalRepairsCount++
         newAlerts +=
@@ -436,9 +416,22 @@ class InfinitGuardianEngine(private val context: Context) {
       }
     }
 
+    // Merge only newly emitted 24h background service alerts
+    val live24h = GuardianLiveBus.snapshot.value
+    val freshBackgroundAlerts =
+      live24h.recentBackgroundAlerts.filter { bg ->
+        val key = "${bg.id}@${bg.timestampLabel}"
+        seenBackgroundAlertKeys.add(key)
+      }
+    if (seenBackgroundAlertKeys.size > 60) {
+      seenBackgroundAlertKeys.clear()
+      live24h.recentBackgroundAlerts.forEach { seenBackgroundAlertKeys.add("${it.id}@${it.timestampLabel}") }
+    }
+    val combinedIncoming = freshBackgroundAlerts + newAlerts
+
     // Update rolling alert feed cleanly (replace matching IDs with freshest, cap at 10)
-    if (newAlerts.isNotEmpty()) {
-      newAlerts.forEach { incoming ->
+    if (combinedIncoming.isNotEmpty()) {
+      combinedIncoming.forEach { incoming ->
         alertHistory.removeAll { it.id == incoming.id }
         alertHistory.add(0, incoming)
       }
@@ -463,15 +456,18 @@ class InfinitGuardianEngine(private val context: Context) {
       }
     }
 
+    val combinedRepairs = totalRepairsCount + live24h.repairs24hCount
     val score = (100 - activeIssuePenalty).coerceIn(25, 100)
     val summary =
       when {
-        !autoRepair -> "Auto-reparo pausado • Somente avisos manuais ($score%)"
+        !shizukuConnected ->
+          "Aguardando Shizuku ativo • Monitoramento 24h entra automático ao conectar ($score%)"
+        !autoRepair -> "Monitor 24h pausado manualmente • Saúde $score%"
+        live24h.running24h ->
+          "Monitor 24h ativo via Shizuku • Suas otimizações sempre preservadas ($score%)"
         newAlerts.any { it.autoFixed } ->
-          "IA corrigiu ${newAlerts.count { it.autoFixed }} problema(s) agora • Saúde $score%"
-        newAlerts.any { it.severity == GuardianSeverity.WARNING } ->
-          "IA detectou ${newAlerts.count { it.severity == GuardianSeverity.WARNING }} aviso(s) ativo(s) • Saúde $score%"
-        else -> "Sistema estável • Anti-travamento e correção automática ativos ($score%)"
+          "IA corrigiu ${newAlerts.count { it.autoFixed }} travamento(s) agora • Saúde $score%"
+        else -> "IA Guardião 24h via Shizuku pronta • Sem travamentos ($score%)"
       }
 
     return GuardianCycleResult(
@@ -481,8 +477,10 @@ class InfinitGuardianEngine(private val context: Context) {
           isAnalyzing = false,
           healthScore = score,
           statusSummary = summary,
-          totalRepairsCount = totalRepairsCount,
-          lastCheckLabel = "Última checagem: $timestamp",
+          totalRepairsCount = combinedRepairs,
+          lastCheckLabel =
+            if (live24h.running24h) live24h.lastProbeLabel
+            else "Última checagem: $timestamp",
           alerts = alertHistory.toList(),
         ),
       userNotice = notices.firstOrNull(),

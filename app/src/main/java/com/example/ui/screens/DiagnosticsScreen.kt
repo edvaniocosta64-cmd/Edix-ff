@@ -130,7 +130,7 @@ fun DiagnosticsScreen(
           ) {
             Icon(imageVector = Icons.Rounded.HealthAndSafety, contentDescription = null, tint = gColor)
             Column {
-              Text("IA Guardião (Sem API • Sem Voz)", style = MaterialTheme.typography.titleMedium, color = ColdWhite)
+              Text("IA Guardião 24h corrigindo bugs", style = MaterialTheme.typography.titleMedium, color = ColdWhite)
               Text(g.statusSummary, style = MaterialTheme.typography.bodySmall, color = MutedLavender)
             }
           }

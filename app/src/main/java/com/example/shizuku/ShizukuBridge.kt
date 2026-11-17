@@ -397,28 +397,86 @@ class ShizukuBridge(private val context: Context) {
       msg to status
     }
 
+  suspend fun probeHardwareMaxHzViaShizuku(): Int? =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(500L) ?: return@withContext null
+      try {
+        val raw =
+          service.runShellCommand(
+            "dumpsys display 2>/dev/null | grep -E 'fps=|refreshRate=|DisplayModeRecord' | head -n 40",
+          )
+        val matches =
+          Regex("(?:fps|refreshRate)\\s*=\\s*(\\d+(?:\\.\\d+)?)")
+            .findAll(raw)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toFloatOrNull()?.toInt() }
+            .filter { it in 60..240 }
+            .toList()
+        matches.maxOrNull()
+      } catch (_: Exception) {
+        null
+      }
+    }
+
   suspend fun applyBoostProfile(
     settings: BoosterSettings,
     targetGamePackage: String? = null,
     forcedMaxHz: Int? = null,
+    screenWidthPx: Int = 0,
+    screenHeightPx: Int = 0,
   ): ShizukuBoostReport? =
     withContext(Dispatchers.IO) {
       val service = ensureBound() ?: return@withContext null
       val logs = mutableListOf<String>()
 
+      val hardwareProbeHz =
+        if (settings.boostActive && (forcedMaxHz == null || forcedMaxHz <= 60)) {
+          val raw =
+            runCatching {
+              service.runShellCommand(
+                "dumpsys display 2>/dev/null | grep -E 'fps=|refreshRate=' | head -n 40",
+              )
+            }.getOrNull().orEmpty()
+          Regex("(?:fps|refreshRate)\\s*=\\s*(\\d+(?:\\.\\d+)?)")
+            .findAll(raw)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toFloatOrNull()?.toInt() }
+            .filter { it in 60..240 }
+            .maxOrNull()
+        } else {
+          null
+        }
+
       val hz =
         when {
-          forcedMaxHz != null && settings.boostActive ->
-            maxOf(forcedMaxHz, settings.targetRefreshRate.hz, 60)
+          settings.boostActive ->
+            maxOf(forcedMaxHz ?: 60, hardwareProbeHz ?: 60, settings.targetRefreshRate.hz, 60)
           settings.fpsUnlocked -> settings.targetRefreshRate.hz
-          else -> 60
+          else -> 0
         }
-      val hzRes =
+
+      if (hz > 0) {
+        val hzCmd = StringBuilder().apply {
+          if (settings.boostActive) {
+            append("settings put global low_power 0; ")
+          }
+          append("settings put system min_refresh_rate ${hz}.0; ")
+          append("settings put system peak_refresh_rate ${hz}.0; ")
+          append("settings put system user_refresh_rate ${hz}.0; ")
+          append("settings put secure user_refresh_rate $hz; ")
+          append("settings put system miui_refresh_rate $hz; ")
+          append("settings put system thermal_limit_refresh_rate $hz")
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && screenWidthPx > 0 && screenHeightPx > 0) {
+            append("; cmd display set-user-preferred-display-mode $screenWidthPx $screenHeightPx ${hz}.0 2>/dev/null || true")
+          }
+        }
+        val hzRes = runSafe(service, hzCmd.toString())
+        logs += "Taxa Máx ${hz}Hz: $hzRes"
+      } else {
         runSafe(
           service,
-          "settings put system min_refresh_rate ${hz}.0; settings put system peak_refresh_rate ${hz}.0; settings put system user_refresh_rate ${hz}.0",
+          "settings delete system min_refresh_rate; settings delete system peak_refresh_rate; settings delete system user_refresh_rate",
         )
-      logs += "Taxa ${hz}Hz: $hzRes"
+        logs += "Taxa Auto Restaurada"
+      }
 
       val effectiveScale = if (settings.boostActive) settings.animationScale else 1.0f
       val animScale = String.format(Locale.US, "%.2f", effectiveScale)
@@ -479,16 +537,25 @@ class ShizukuBridge(private val context: Context) {
       }
 
       if (packagesToTune.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val targetGameFps = if (hz > 0) hz else 60
         packagesToTune.forEach { pkg ->
-          runSafe(service, "cmd game mode performance $pkg")
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && settings.boostActive) {
+            runSafe(
+              service,
+              "cmd game mode performance $pkg; cmd game set --mode performance --fps $targetGameFps $pkg 2>/dev/null || cmd game set --fps $targetGameFps $pkg 2>/dev/null || true",
+            )
+          } else {
+            runSafe(service, "cmd game mode performance $pkg")
+          }
         }
-        logs += "GameMode (${packagesToTune.size})"
+        logs += "GameMode ${targetGameFps}FPS (${packagesToTune.size})"
       }
 
       val trimRes = runSafe(service, "pm trim-caches 2147483648; am kill-all")
       logs += "Trim/Kill: $trimRes"
 
-      val summary = "Shizuku aplicou ${logs.size} otimizações (${hz}Hz • ${settings.graphicsBackend.title})"
+      val hzLabel = if (hz > 0) "${hz}Hz" else "Auto Hz"
+      val summary = "Shizuku aplicou ${logs.size} otimizações ($hzLabel • ${settings.graphicsBackend.title})"
       _status.update { it.copy(lastCommandSummary = summary) }
       ShizukuBoostReport(executedCount = logs.size, summary = summary, details = logs)
     }
@@ -893,10 +960,55 @@ class ShizukuBridge(private val context: Context) {
       summary
     }
 
+  data class ShizukuLiveGuardianProbe(
+    val connected: Boolean,
+    val foregroundPackage: String? = null,
+    val liveFps: Int? = null,
+    val hasAnrOrLag: Boolean = false,
+    val loadAvgHigh: Boolean = false,
+    val summaryNote: String = "",
+  )
+
+  suspend fun probeLiveStuttersViaShizuku(): ShizukuLiveGuardianProbe =
+    withContext(Dispatchers.IO) {
+      val service = ensureBound(500L) ?: return@withContext ShizukuLiveGuardianProbe(connected = false)
+      val (fps, topPkg) = sampleAndroid11FpsTelemetry()
+      val anrOrLoadRaw =
+        try {
+          service.runShellCommand(
+            "anr=\$(dumpsys activity processes 2>/dev/null | grep -E 'notResponding=true|ANR in' | head -n 1); " +
+              "load=\$(cat /proc/loadavg 2>/dev/null | cut -d' ' -f1); " +
+              "echo \"ANR=\${anr}|LOAD=\${load}\""
+          )
+        } catch (_: Exception) {
+          ""
+        }
+      val hasAnr = anrOrLoadRaw.contains("notResponding=true", true) || anrOrLoadRaw.contains("ANR in", true)
+      val loadVal =
+        Regex("LOAD=([0-9]+\\.?[0-9]*)").find(anrOrLoadRaw)?.groupValues?.getOrNull(1)?.toFloatOrNull() ?: 0f
+      val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
+      val loadHigh = loadVal > cores * 1.35f
+      val note =
+        buildList {
+          if (!topPkg.isNullOrBlank()) add("App: ${topPkg.substringAfterLast('.')}")
+          if (fps != null) add("${fps} FPS")
+          if (hasAnr) add("ANR detectado")
+          if (loadHigh) add("Carga CPU ${String.format(Locale.US, "%.1f", loadVal)}")
+        }.joinToString(" • ")
+      ShizukuLiveGuardianProbe(
+        connected = true,
+        foregroundPackage = topPkg,
+        liveFps = fps,
+        hasAnrOrLag = hasAnr || (fps != null && fps in 1..42),
+        loadAvgHigh = loadHigh,
+        summaryNote = note,
+      )
+    }
+
   suspend fun runGuardianMaintenance(
     trimMemoryAndCache: Boolean,
     liftBatterySaver: Boolean,
-    coolThermalLoad: Boolean,
+    boostActivePackage: String? = null,
   ): List<String> =
     withContext(Dispatchers.IO) {
       val service = ensureBound(600L) ?: return@withContext emptyList()
@@ -905,18 +1017,13 @@ class ShizukuBridge(private val context: Context) {
         runSafe(service, "settings put global low_power 0; cmd power set-adaptive-power-saver-enabled false")
         fixed += "Economia de energia suspensa via Shizuku"
       }
-      if (coolThermalLoad) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-          runSafe(service, "cmd power set-fixed-performance-mode-enabled false")
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          runSafe(service, "cmd thermalservice reset")
-        }
-        fixed += "Carga térmica aliviada (thermalservice reset)"
+      if (!boostActivePackage.isNullOrBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        runSafe(service, "cmd game mode performance $boostActivePackage")
+        fixed += "Prioridade GameMode mantida em $boostActivePackage"
       }
       if (trimMemoryAndCache) {
         runSafe(service, "am kill-all; pm trim-caches 2147483648")
-        fixed += "Cache do sistema e processos ociosos limpos"
+        fixed += "Cache global e processos pesados em 2º plano limpos sem desligar otimizações"
       }
       fixed
     }

@@ -112,7 +112,9 @@ fun DomainExpansionOverlay(
   var dismissedOnce by remember { mutableStateOf(false) }
   var signPrepared by remember { mutableStateOf(false) }
   var burstPrepared by remember { mutableStateOf(false) }
+  var burstPreloadFailed by remember { mutableStateOf(false) }
   var burstStarted by remember { mutableStateOf(false) }
+  var burstDurationMs by remember { mutableIntStateOf(7800) }
 
   val triggerDismiss = remember(onDismiss) {
     {
@@ -211,27 +213,36 @@ fun DomainExpansionOverlay(
       )
       val vol = if (voiceEnabled) 1f else 0f
       burstPlayer.setVolume(vol, vol)
-      burstPlayer.setOnVideoSizeChangedListener { _, w, h ->
-        if (w > 0 && h > 0) {
+      burstPlayer.setOnVideoSizeChangedListener { mp, w, h ->
+        if (w > 0 && h > 0 && stage == DomainIntroStage.DOMAIN_BURST) {
           videoWidth = w
           videoHeight = h
           textureViewRef?.let { tv -> updateFullScreenCropMatrix(tv, w, h) }
         }
       }
-      burstPlayer.setOnPreparedListener {
+      burstPlayer.setOnPreparedListener { mp ->
         burstPrepared = true
+        burstPreloadFailed = false
+        val dur = runCatching { mp.duration }.getOrDefault(0)
+        if (dur > 1000) burstDurationMs = dur + 400
       }
       burstPlayer.setOnCompletionListener {
-        triggerDismiss()
+        if (stage == DomainIntroStage.DOMAIN_BURST) {
+          triggerDismiss()
+        }
       }
       burstPlayer.setOnErrorListener { _, _, _ ->
-        videoFallbackError = true
-        triggerDismiss()
+        burstPrepared = false
+        burstPreloadFailed = true
+        if (stage == DomainIntroStage.DOMAIN_BURST) {
+          videoFallbackError = true
+          triggerDismiss()
+        }
         true
       }
       burstPlayer.prepareAsync()
     } catch (_: Exception) {
-      // Fallback timer will dismiss cleanly if burst fails
+      burstPreloadFailed = true
     }
   }
 
@@ -260,19 +271,45 @@ fun DomainExpansionOverlay(
     }
   }
 
-  // Switch instantaneously to pre-prepared Stage 2 playback when ENTRAR is pressed
-  LaunchedEffect(stage, surfaceRef, burstPrepared) {
+  // Switch cleanly to Stage 2 playback when ENTRAR is pressed (retrying single-decoder prepare if preload hit decoder limit)
+  LaunchedEffect(stage, surfaceRef, burstPrepared, burstPreloadFailed) {
     if (stage != DomainIntroStage.DOMAIN_BURST) return@LaunchedEffect
-    val activeSurface = surfaceRef
-    if (activeSurface != null && burstPrepared && !burstStarted) {
-      burstStarted = true
-      try {
+    val activeSurface = surfaceRef ?: return@LaunchedEffect
+
+    if (burstPreloadFailed && !burstPrepared && !burstStarted) {
+      burstPreloadFailed = false
+      runCatching {
         if (signPlayer.isPlaying) signPlayer.stop()
-      } catch (_: Exception) {}
-      try {
         signPlayer.setSurface(null)
-      } catch (_: Exception) {}
+        signPlayer.release()
+      }
+      runCatching {
+        burstPlayer.reset()
+        burstPlayer.setAudioAttributes(audioAttrs)
+        burstPlayer.setDataSource(
+          context,
+          Uri.parse("android.resource://${context.packageName}/${R.raw.domain_intro_burst}"),
+        )
+        val vol = if (voiceEnabled) 1f else 0f
+        burstPlayer.setVolume(vol, vol)
+        burstPlayer.prepareAsync()
+      }.onFailure {
+        videoFallbackError = true
+      }
+      return@LaunchedEffect
+    }
+
+    if (burstPrepared && !burstStarted) {
+      burstStarted = true
+      runCatching { if (signPlayer.isPlaying) signPlayer.stop() }
+      runCatching { signPlayer.setSurface(null) }
       try {
+        val bw = runCatching { burstPlayer.videoWidth }.getOrDefault(0)
+        val bh = runCatching { burstPlayer.videoHeight }.getOrDefault(0)
+        if (bw > 0 && bh > 0) {
+          videoWidth = bw
+          videoHeight = bh
+        }
         burstPlayer.setSurface(activeSurface)
         textureViewRef?.let { tv -> updateFullScreenCropMatrix(tv, videoWidth, videoHeight) }
         burstPlayer.start()
@@ -287,7 +324,9 @@ fun DomainExpansionOverlay(
     if (stage == DomainIntroStage.DOMAIN_BURST) {
       burstShockwave.snapTo(0f)
       burstShockwave.animateTo(1f, animationSpec = tween(1600, easing = FastOutSlowInEasing))
-      delay(if (videoFallbackError) 1200L else 6200L)
+      val remainingWait =
+        if (videoFallbackError) 1200L else (burstDurationMs - 1600L).coerceIn(3200L, 12_000L)
+      delay(remainingWait)
       triggerDismiss()
     }
   }

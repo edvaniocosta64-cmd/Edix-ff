@@ -380,11 +380,10 @@ class AxWebUiActivity : ComponentActivity() {
     val modRoot = moduleRootDir
     val cleanRel = rawPath.trimStart('/').ifBlank { "index.html" }
 
-    val candidate = resolveSafe(base, cleanRel)
-      ?: modRoot?.let { resolveSafe(it, cleanRel) }
-      ?: return null
-
-    if (!candidate.exists() || !candidate.isFile) return null
+    val candidate =
+      resolveSafe(base, cleanRel)?.takeIf { it.exists() && it.isFile }
+        ?: modRoot?.let { resolveSafe(it, cleanRel) }?.takeIf { it.exists() && it.isFile }
+        ?: return null
     val mime = detectMimeType(candidate.name)
 
     if (mime == "text/html") {

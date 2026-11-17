@@ -101,6 +101,16 @@
                 android:value="User-initiated per-game DPI and touch response session monitor that applies custom DPI while a selected game is in foreground and restores native display density on exit." />
         </service>
 
+        <service
+            android:name=".guardian.GuardianMonitorService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="24h real-time background frame pacing, ANR stutter, and memory pressure monitor activated only when Shizuku is connected to prevent game freezes without altering user booster optimizations." />
+        </service>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

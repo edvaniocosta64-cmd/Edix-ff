@@ -469,6 +469,7 @@ class FloatingHzOverlayService : Service() {
 
     val option =
       when {
+        hz >= 144 -> RefreshRateOption.HZ_144
         hz >= 120 -> RefreshRateOption.HZ_120
         hz >= 90 -> RefreshRateOption.HZ_90
         else -> RefreshRateOption.HZ_60
@@ -774,8 +775,10 @@ class FloatingHzOverlayService : Service() {
         val dm = resources.displayMetrics
         dm.widthPixels to dm.heightPixels
       }
-    val maxX = (screenW - dp(252)).coerceAtLeast(0)
-    val maxY = (screenH - dp(220)).coerceAtLeast(0)
+    val panelW = if (isGameTurboMini) dp(100) else dp(252)
+    val panelH = if (isGameTurboMini) dp(48) else dp(220)
+    val maxX = (screenW - panelW).coerceAtLeast(0)
+    val maxY = (screenH - panelH).coerceAtLeast(0)
     lp.x = lp.x.coerceIn(0, maxX)
     lp.y = lp.y.coerceIn(dp(20), maxY)
     try {

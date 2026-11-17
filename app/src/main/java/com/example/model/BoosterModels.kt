@@ -38,6 +38,7 @@ enum class RefreshRateOption(val hz: Int, val label: String, val frameBudgetMs: 
   HZ_60(60, "60 Hz", 16.67f),
   HZ_90(90, "90 Hz", 11.11f),
   HZ_120(120, "120 Hz", 8.33f),
+  HZ_144(144, "144 Hz", 6.94f),
 }
 
 enum class AnimationScaleOption(val scale: Float, val label: String, val subtitle: String) {

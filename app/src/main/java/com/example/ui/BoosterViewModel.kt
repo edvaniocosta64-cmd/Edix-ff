@@ -18,6 +18,8 @@ import com.example.audio.DomainVoiceEngine
 import com.example.ax.AxExtensionManager
 import com.example.data.BoosterPreferencesRepository
 import com.example.data.DeviceTelemetryManager
+import com.example.guardian.GuardianLiveBus
+import com.example.guardian.GuardianMonitorService
 import com.example.guardian.InfinitGuardianEngine
 import com.example.model.AxExtensionModule
 import com.example.model.AxToggleableOption
@@ -144,22 +146,26 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       var prevConn: ShizukuConnectionState? = null
       shizukuBridge.status.collect { shizuku ->
         _uiState.update { it.copy(shizukuStatus = shizuku) }
-        if (shizuku.connectionState == ShizukuConnectionState.CONNECTED &&
-          prevConn != ShizukuConnectionState.CONNECTED
-        ) {
-          val verified = shizukuBridge.verifyGraphicsBackendStatus(_uiState.value.settings.addedGamePackages)
-          _uiState.update { it.copy(graphicsStatus = verified) }
-        } else if (shizuku.connectionState != ShizukuConnectionState.CONNECTED &&
-          prevConn == ShizukuConnectionState.CONNECTED
-        ) {
-          _uiState.update {
-            it.copy(
-              graphicsStatus =
-                GraphicsRendererStatus(
-                  verifiedViaShizuku = false,
-                  lastVerifiedLabel = "Shizuku desconectado — conecte para verificar ao vivo.",
-                )
-            )
+        if (shizuku.connectionState == ShizukuConnectionState.CONNECTED) {
+          if (_uiState.value.settings.guardianAutoRepairEnabled) {
+            GuardianMonitorService.start(getApplication())
+          }
+          if (prevConn != ShizukuConnectionState.CONNECTED) {
+            val verified = shizukuBridge.verifyGraphicsBackendStatus(_uiState.value.settings.addedGamePackages)
+            _uiState.update { it.copy(graphicsStatus = verified) }
+          }
+        } else {
+          GuardianMonitorService.stop(getApplication())
+          if (prevConn == ShizukuConnectionState.CONNECTED) {
+            _uiState.update {
+              it.copy(
+                graphicsStatus =
+                  GraphicsRendererStatus(
+                    verifiedViaShizuku = false,
+                    lastVerifiedLabel = "Shizuku desconectado — conecte para verificar ao vivo.",
+                  )
+              )
+            }
           }
         }
         prevConn = shizuku.connectionState
@@ -225,12 +231,24 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     viewModelScope.launch {
       repository.setGuardianAutoRepairEnabled(enabled)
       telemetryManager.pulseHaptic(false)
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      if (enabled && shizukuConnected) {
+        GuardianMonitorService.start(getApplication())
+      } else if (!enabled) {
+        GuardianMonitorService.stop(getApplication())
+      }
       _uiState.update {
         it.copy(
           guardianState = it.guardianState.copy(autoRepairEnabled = enabled),
           statusBanner =
-            if (enabled) "IA Guardião ativada: corrigindo bugs e travamentos em segundo plano (sem API)."
-            else "Auto-reparo da IA pausado (somente avisos ativos).",
+            when {
+              enabled && shizukuConnected ->
+                "IA Guardião 24h ativa via Shizuku: corrigindo travamentos sem desativar suas otimizações."
+              enabled ->
+                "IA Guardião pronta: entrará em modo 24h automaticamente assim que o Shizuku conectar."
+              else -> "Monitor 24h pausado."
+            },
         )
       }
       if (enabled) {
@@ -264,6 +282,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun dismissGuardianAlert(alertId: String) {
+    GuardianLiveBus.dismissBackgroundAlert(alertId)
     _uiState.update { state ->
       state.copy(guardianState = guardianEngine.dismissAlert(alertId, state.guardianState))
     }
@@ -612,7 +631,20 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
     val currentStatus = _uiState.value.shizukuStatus.connectionState
     if (currentStatus == ShizukuConnectionState.CONNECTED) {
       viewModelScope.launch {
-        val report = shizukuBridge.applyBoostProfile(_uiState.value.settings)
+        val currentSettings = _uiState.value.settings
+        val freshTelemetry =
+          withContext(Dispatchers.IO) {
+            telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
+          }
+        val probedHz = shizukuBridge.probeHardwareMaxHzViaShizuku()
+        val maxHz = maxOf(freshTelemetry.maxDisplayHz, probedHz ?: 60, 60)
+        val report =
+          shizukuBridge.applyBoostProfile(
+            settings = currentSettings,
+            forcedMaxHz = if (currentSettings.boostActive) maxHz else null,
+            screenWidthPx = freshTelemetry.screenSpec.widthPx,
+            screenHeightPx = freshTelemetry.screenSpec.heightPx,
+          )
         if (report != null) {
           telemetryManager.pulseHaptic(false)
           _uiState.update {
@@ -866,6 +898,8 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       FloatingFpsMeterService.stop(app)
       ResolutionPanelService.stop(app)
       GameDpiSessionService.restoreAndStop(app)
+      GuardianMonitorService.stop(app)
+      GuardianLiveBus.resetAll()
 
       if (shizukuConnected) {
         activeAxPlugins.forEach { plugin ->
@@ -1005,6 +1039,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
 
   private fun resolveMaxRefreshOption(maxHz: Int): RefreshRateOption =
     when {
+      maxHz >= 144 -> RefreshRateOption.HZ_144
       maxHz >= 120 -> RefreshRateOption.HZ_120
       maxHz >= 90 -> RefreshRateOption.HZ_90
       else -> RefreshRateOption.HZ_60
@@ -1019,11 +1054,18 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           withContext(Dispatchers.IO) {
             telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
           }
-        val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, 60)
+        val shizukuConnected =
+          _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+        val shizukuProbedMaxHz =
+          if (shizukuConnected && freshTelemetry.maxDisplayHz <= 60) {
+            shizukuBridge.probeHardwareMaxHzViaShizuku()
+          } else {
+            null
+          }
+        val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, shizukuProbedMaxHz ?: 60, 60)
         val maxOption = resolveMaxRefreshOption(deviceMaxHz)
         val canForceRootPerf =
-          Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && shizukuConnected
 
         repository.setBoostActive(true)
         repository.setFpsUnlocked(true)
@@ -1050,7 +1092,13 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           targetHz = deviceMaxHz,
           sustainedPerformance = false,
         )
-        val shizukuReport = shizukuBridge.applyBoostProfile(nextSettings, forcedMaxHz = deviceMaxHz)
+        val shizukuReport =
+          shizukuBridge.applyBoostProfile(
+            settings = nextSettings,
+            forcedMaxHz = deviceMaxHz,
+            screenWidthPx = freshTelemetry.screenSpec.widthPx,
+            screenHeightPx = freshTelemetry.screenSpec.heightPx,
+          )
         val rootReport =
           if (canForceRootPerf) {
             shizukuBridge.applyRootTotalPerformance(true, nextSettings.addedGamePackages)
@@ -1060,7 +1108,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
         val combinedLogs =
           ((shizukuReport?.details ?: emptyList()) + (rootReport?.details ?: emptyList())).distinct()
         val verifiedGraphics =
-          if (_uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED) {
+          if (shizukuConnected) {
             shizukuBridge.verifyGraphicsBackendStatus(nextSettings.addedGamePackages)
           } else {
             _uiState.value.graphicsStatus
@@ -1077,7 +1125,7 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
             shizukuLogs = combinedLogs.ifEmpty { it.shizukuLogs },
             graphicsStatus = verifiedGraphics,
             statusBanner =
-              "Modo Infinito Ativo • ${deviceMaxHz}Hz Máx + Desempenho Total Forçado$shizukuSuffix (${freed} MB)",
+              "Vazio Roxo Ativo • ${deviceMaxHz}Hz Máx + FPS Máximo Forçado$shizukuSuffix (${freed} MB)",
           )
         }
       } else {
@@ -1231,10 +1279,12 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       telemetryManager.resetDisplayRefreshRateToDefault(activity)
       return
     }
+    val hardwareMaxHz =
+      maxOf(_uiState.value.telemetry.maxDisplayHz, telemetryManager.readHardwareMaxHzQuick(), 60)
     val targetHz =
       when {
         settings.boostActive ->
-          maxOf(_uiState.value.telemetry.maxDisplayHz, settings.targetRefreshRate.hz, 60)
+          maxOf(hardwareMaxHz, settings.targetRefreshRate.hz, 60)
         settings.fpsUnlocked -> settings.targetRefreshRate.hz
         else -> 60
       }
@@ -1345,17 +1395,19 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
           }
         }
         DiagnosticAction.UNLOCK_FPS -> {
+          val maxHz = telemetryManager.readHardwareMaxHzQuick()
+          val maxOpt = resolveMaxRefreshOption(maxHz)
           repository.setFpsUnlocked(true)
-          repository.setTargetRefreshRate(RefreshRateOption.HZ_120)
+          repository.setTargetRefreshRate(maxOpt)
           applyWindowPerformance(
             activity,
             _uiState.value.settings.copy(
               fpsUnlocked = true,
-              targetRefreshRate = RefreshRateOption.HZ_120,
+              targetRefreshRate = maxOpt,
             ),
           )
           telemetryManager.pulseHaptic(true)
-          _uiState.update { it.copy(statusBanner = "FPS desbloqueado e taxa definida para 120 Hz!") }
+          _uiState.update { it.copy(statusBanner = "FPS desbloqueado e taxa definida para ${maxOpt.label}!") }
         }
         DiagnosticAction.NONE -> Unit
       }
@@ -1394,11 +1446,18 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
         withContext(Dispatchers.IO) {
           telemetryManager.readTelemetry(latestFps, latestFrameTimeMs)
         }
-      val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, 60)
+      val shizukuConnected =
+        _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+      val shizukuProbedMaxHz =
+        if (shizukuConnected && freshTelemetry.maxDisplayHz <= 60) {
+          shizukuBridge.probeHardwareMaxHzViaShizuku()
+        } else {
+          null
+        }
+      val deviceMaxHz = maxOf(freshTelemetry.maxDisplayHz, shizukuProbedMaxHz ?: 60, 60)
       val maxOption = resolveMaxRefreshOption(deviceMaxHz)
       val canForceRootPerf =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-          _uiState.value.shizukuStatus.connectionState == ShizukuConnectionState.CONNECTED
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && shizukuConnected
 
       val activeSettings =
         current.copy(
@@ -1426,9 +1485,11 @@ class BoosterViewModel(application: Application) : AndroidViewModel(application)
       )
       val shizukuReport =
         shizukuBridge.applyBoostProfile(
-          activeSettings,
+          settings = activeSettings,
           targetGamePackage = packageName,
           forcedMaxHz = deviceMaxHz,
+          screenWidthPx = freshTelemetry.screenSpec.widthPx,
+          screenHeightPx = freshTelemetry.screenSpec.heightPx,
         )
       val rootReport =
         if (canForceRootPerf) {

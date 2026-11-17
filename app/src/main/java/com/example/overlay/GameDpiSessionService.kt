@@ -162,10 +162,14 @@ class GameDpiSessionService : Service() {
           if (topPkg == targetPackage) {
             sawGameInForeground = true
             offGameStreak = 0
-          } else if (topPkg != null && topPkg != "com.android.systemui") {
+          } else if (
+            topPkg != null &&
+              topPkg != "com.android.systemui" &&
+              !topPkg.contains("permissioncontroller")
+          ) {
             if (sawGameInForeground) {
               offGameStreak++
-              if (offGameStreak >= 2) {
+              if (offGameStreak >= 3) {
                 break
               }
             } else if (ticksSinceLaunch >= 12 && topPkg != packageName) {
@@ -269,7 +273,24 @@ class GameDpiSessionService : Service() {
   override fun onDestroy() {
     isRunning = false
     watchJob?.cancel()
-    shizukuBridge.release()
+    if (activeDpiApplied || activeTouchApplied) {
+      val restoreDpi = activeDpiApplied
+      val restoreTouch = activeTouchApplied
+      activeDpiApplied = false
+      activeTouchApplied = false
+      val bridgeToCleanup = shizukuBridge
+      CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        runCatching {
+          bridgeToCleanup.restoreGameSessionTweaks(
+            restoreDpi = restoreDpi,
+            restoreTouch = restoreTouch,
+          )
+        }
+        bridgeToCleanup.release()
+      }
+    } else {
+      shizukuBridge.release()
+    }
     scope.cancel()
     super.onDestroy()
   }
